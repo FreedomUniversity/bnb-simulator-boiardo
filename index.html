@@ -245,20 +245,27 @@ function avgOcc(sc){
 const DEFAULT_STATE = {
   acquisto: { prezzo:300000, notaio:3500, agenzia:12000, agenziaPercent:false, agenziaPctVal:0.04,
     primaCasa:false, lavori:5000, rendita:1084.56 },
-  mutuo: { enabled:true, importo:300000, ltv:1.0, tasso:0.04, durata:25, tipo:'fisso' },
+  mutuo: { enabled:true, importo:300000, ltv:1.0, tasso:0.04, durata:30, tipo:'fisso' },
   costiFissi: { imuAuto:true, aliquotaImu:0.0106, imuManuale:1931, tari:400, condominio:1800,
     assicurazione:500, assicBnb:false, assicBnbVal:800, manutenzione:1500, commercialista:600,
     pmOn:false, pmPercent:0.20 },
   fiscale: { regime:'ced21', redditoComplessivo:30000, impostaSoggiorno:3.5 },
   proiezioni: { rivalutazione:0.02, crescitaRicavi:0.03, inflazioneCosti:0.025, annoUscita:10, orizzonte:25 },
   scenarios: [
-    { id:1, nome:'B&B 3 camere — scenario base', tipo:'bnb',
-      bnbCamere:[ {adr:90,occ:0.8,bagnoPrivato:true}, {adr:70,occ:0.8,bagnoPrivato:false}, {adr:70,occ:0.8,bagnoPrivato:false} ],
+    { id:1, nome:'B&B 3 camere (la 3ª a bagno condiviso)', tipo:'bnb',
+      bnbCamere:[ {adr:90,occ:0.8,bagnoPrivato:true}, {adr:90,occ:0.8,bagnoPrivato:true}, {adr:70,occ:0.8,bagnoPrivato:false} ],
       mix:{booking:100,airbnb:0,diretti:0}, durataMedia:3, costoPulizia:25, biancheriaMese:150, utenzeMese:400,
-      affittoStanze:[], affUtenzeMese:150 }
+      affittoStanze:[], affUtenzeMese:0 },
+    { id:2, nome:'B&B solo 2 camere (bagno privato)', tipo:'bnb',
+      bnbCamere:[ {adr:90,occ:0.8,bagnoPrivato:true}, {adr:90,occ:0.8,bagnoPrivato:true} ],
+      mix:{booking:100,airbnb:0,diretti:0}, durataMedia:3, costoPulizia:25, biancheriaMese:150, utenzeMese:400,
+      affittoStanze:[], affUtenzeMese:0 },
+    { id:3, nome:'Affitto 3 stanze a studenti/lavoratori', tipo:'affitto',
+      bnbCamere:[], mix:{booking:100,airbnb:0,diretti:0}, durataMedia:3, costoPulizia:25, biancheriaMese:150, utenzeMese:400,
+      affittoStanze:[ {canone:700,vacancy:0,bagnoPrivato:true}, {canone:600,vacancy:0,bagnoPrivato:false}, {canone:600,vacancy:0,bagnoPrivato:false} ], affUtenzeMese:0 }
   ]
 };
-const STORAGE_KEY = 'bnb-simulator-boiardo-v1';
+const STORAGE_KEY = 'bnb-simulator-boiardo-v2';
 function loadState(){
   try { const s = localStorage.getItem(STORAGE_KEY); if(s) return {...DEFAULT_STATE, ...JSON.parse(s)}; } catch(e){}
   return DEFAULT_STATE;
