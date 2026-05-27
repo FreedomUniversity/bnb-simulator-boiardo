@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Simulatore Investimento B&B — Via Boiardo, Roma</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/prop-types@15/prop-types.min.js" crossorigin></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: { colors: {
+      navy: '#0a1f3d', navy2: '#13294b', gold: '#c5a028', gold2: '#e0bd4a',
+      pos: '#1f9d55', neg: '#c0392b'
+    } } }
+  };
+</script>
+<style>
+  body { background:#f4f5f7; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:#cbd2dd; border-radius:6px; }
+  input[type=range]{ accent-color:#c5a028; }
+  @media print {
+    .no-print { display:none !important; }
+    .print-block { display:block !important; }
+    body { background:#fff; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+const { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
+  CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceDot } = Recharts;
+
+/* ============================ FORMATTAZIONE ============================ */
+const fmtEur = (n) => new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(Number.isFinite(n)?n:0);
+const fmtEur2 = (n) => new Intl.NumberFormat('it-IT', { style:'currency', currency:'EUR', minimumFractionDigits:2, maximumFractionDigits:2 }).format(Number.isFinite(n)?n:0);
+const fmtNum = (n,d=0) => new Intl.NumberFormat('it-IT', { minimumFractionDigits:d, maximumFractionDigits:d }).format(Number.isFinite(n)?n:0);
+const fmtPct = (n,d=1) => fmtNum(n,d) + '%';
+
+/* ============================ COSTANTI ============================ */
+const ALIQUOTE_IMU = { prima_casa:0, seconda_casa:0.0106, locato_concordato:0.0076 };
+const RATE_PLAT = { booking:0.17, airbnb:0.03, diretti:0 };
+const COLORI_SCEN = ['#0a1f3d', '#c5a028', '#1f9d55', '#8e44ad'];
+const COLORI_PIE = ['#0a1f3d','#13294b','#c5a028','#e0bd4a','#1f9d55','#16a085','#c0392b','#7f8c8d','#2980b9','#8e44ad'];
+
+/* ============================ FINANZA ============================ */
+function valoreCatastale(rendita, primaCasa){ return rendita * 1.05 * (primaCasa ? 115.5 : 126); }
+function impostaRegistro(rendita, primaCasa){
+  const vc = valoreCatastale(rendita, primaCasa);
+  return Math.max(vc * (primaCasa ? 0.02 : 0.09), 1000);
+}
+function calcImu(rendita, primaCasa, aliquota){ return primaCasa ? 0 : rendita * 1.05 * 160 * aliquota; }
+function rataMutuo(P, tassoAnnuo, anni){
+  const r = tassoAnnuo/12, n = anni*12;
+  if(P<=0 || n<=0) return 0;
+  if(r===0) return P/n;
+  return P * (r*Math.pow(1+r,n)) / (Math.pow(1+r,n)-1);
+}
+function debitoResiduo(P, tassoAnnuo, anni, annoT){
+  const r = tassoAnnuo/12, n = anni*12, m = Math.min(Math.round(annoT*12), n);
+  if(P<=0) return 0;
+  if(r===0) return Math.max(P*(1-m/n),0);
+  const rata = rataMutuo(P,tassoAnnuo,anni);
+  const bal = P*Math.pow(1+r,m) - rata*(Math.pow(1+r,m)-1)/r;
+  return Math.max(bal,0);
+}
+function irpefTax(reddito){
+  const sc=[[28000,.23],[50000,.35],[Infinity,.43]];
+  let tax=0, prev=0;
+  for(const [cap,al] of sc){
+    if(reddito>prev){ tax += (Math.min(reddito,cap)-prev)*al; prev=cap; } else break;
+  }
+  return tax;
+}
+function irr(flussi, guessLo=-0.95, guessHi=1.5){
+  const npv=(r)=> flussi.reduce((a,cf,t)=> a + cf/Math.pow(1+r,t), 0);
+  let lo=guessLo, hi=guessHi, flo=npv(lo), fhi=npv(hi);
+  if(flo*fhi>0) return null; // nessun cambio di segno nel range
+  for(let i=0;i<200;i++){
+    const mid=(lo+hi)/2, fm=npv(mid);
+    if(Math.abs(fm)<1e-6) return mid;
+    if(flo*fm<0){ hi=mid; fhi=fm; } else { lo=mid; flo=fm; }
+  }
+  return (lo+hi)/2;
+}
+
+/* ============================ CALCOLO SCENARIO ============================ */
+function effComm(mix){
+  const tot = (mix.booking+mix.airbnb+mix.diretti)||1;
+  return (mix.booking*RATE_PLAT.booking + mix.airbnb*RATE_PLAT.airbnb + mix.diretti*RATE_PLAT.diretti)/tot;
+}
+function computeScenario(sc, ctx, overrides={}){
+  const { acquisto, mutuo, costiFissi, fiscale } = ctx;
+  const occMul = overrides.occMul ?? 1;
+  const adrMul = overrides.adrMul ?? 1;
+  const tassoOv = overrides.tasso ?? mutuo.tasso;
+
+  // --- Ricavi B&B ---
+  let bnbRicavo=0, notti=0;
+  (sc.bnbCamere||[]).forEach(c=>{
+    const occ = Math.min(c.occ*occMul, 1);
+    const n = 365*occ;
+    notti += n;
+    bnbRicavo += n * c.adr * adrMul;
+  });
+  const comm = effComm(sc.mix);
+  const commissioni = bnbRicavo * comm;
+  const cambi = sc.durataMedia>0 ? notti/sc.durataMedia : 0;
+  const pulizie = cambi * sc.costoPulizia;
+  const hasBnb = (sc.bnbCamere||[]).length>0;
+  const biancheria = hasBnb ? sc.biancheriaMese*12 : 0;
+  const utenzeBnb = hasBnb ? sc.utenzeMese*12 : 0;
+
+  // --- Ricavi affitto ---
+  let affittoRicavo=0;
+  (sc.affittoStanze||[]).forEach(s=>{ affittoRicavo += s.canone*(12 - s.vacancy); });
+  const hasAff = (sc.affittoStanze||[]).length>0;
+  const utenzeAff = hasAff ? sc.affUtenzeMese*12 : 0;
+
+  const ricavoLordo = bnbRicavo + affittoRicavo;
+  const costiVariabili = commissioni + pulizie + biancheria + utenzeBnb + utenzeAff;
+
+  // --- Costi fissi ---
+  const imuVal = costiFissi.imuAuto
+    ? calcImu(acquisto.rendita, acquisto.primaCasa, costiFissi.aliquotaImu)
+    : costiFissi.imuManuale;
+  const assicurazione = costiFissi.assicBnb ? costiFissi.assicBnbVal : costiFissi.assicurazione;
+  const sommaFissi = imuVal + costiFissi.tari + costiFissi.condominio + assicurazione
+    + costiFissi.manutenzione + costiFissi.commercialista;
+  const pmCost = costiFissi.pmOn ? ricavoLordo*costiFissi.pmPercent : 0;
+
+  // --- Tasse sul reddito ---
+  let tasse=0, regimeLabel='';
+  if(fiscale.regime==='ced21'){ tasse = ricavoLordo*0.21; regimeLabel='Cedolare 21%'; }
+  else if(fiscale.regime==='ced26'){ tasse = ricavoLordo*0.26; regimeLabel='Cedolare 26%'; }
+  else if(fiscale.regime==='irpef'){
+    const base = Math.max(ricavoLordo - costiVariabili - sommaFissi - pmCost, 0);
+    tasse = irpefTax(fiscale.redditoComplessivo + base) - irpefTax(fiscale.redditoComplessivo);
+    regimeLabel='IRPEF marginale';
+  } else if(fiscale.regime==='forfettario'){
+    tasse = ricavoLordo*0.40*0.15; regimeLabel='Forfettario (caveat)';
+  }
+
+  const nettoAnteMutuo = ricavoLordo - costiVariabili - sommaFissi - pmCost - tasse;
+  const rataAnnua = mutuo.enabled ? rataMutuo(mutuo.importo, tassoOv, mutuo.durata)*12 : 0;
+  const cashFlow = nettoAnteMutuo - rataAnnua;
+
+  // --- Investimento ---
+  const registro = impostaRegistro(acquisto.rendita, acquisto.primaCasa);
+  const agenzia = acquisto.agenziaPercent ? acquisto.prezzo*acquisto.agenziaPctVal : acquisto.agenzia;
+  const investimentoTotale = acquisto.prezzo + acquisto.notaio + agenzia + registro + 50 + 50 + acquisto.lavori;
+  const investimentoCash = investimentoTotale - (mutuo.enabled ? mutuo.importo : 0);
+
+  const yieldLordo = acquisto.prezzo>0 ? ricavoLordo/acquisto.prezzo*100 : 0;
+  const yieldNetto = investimentoTotale>0 ? nettoAnteMutuo/investimentoTotale*100 : 0;
+  const breakEven = cashFlow>0 ? investimentoCash/cashFlow : null;
+
+  return {
+    ricavoLordo, bnbRicavo, affittoRicavo, notti, cambi,
+    commissioni, pulizie, biancheria, utenzeBnb, utenzeAff, costiVariabili,
+    imuVal, assicurazione, sommaFissi, pmCost, tasse, regimeLabel,
+    nettoAnteMutuo, rataAnnua, cashFlow, cashFlowMese: cashFlow/12,
+    registro, agenzia, investimentoTotale, investimentoCash,
+    yieldLordo, yieldNetto, breakEven,
+    costiFissiDettaglio: { imuVal, tari:costiFissi.tari, condominio:costiFissi.condominio,
+      assicurazione, manutenzione:costiFissi.manutenzione, commercialista:costiFissi.commercialista }
+  };
+}
+
+/* ============================ STATO DEFAULT ============================ */
+const DEFAULT_STATE = {
+  acquisto: { prezzo:300000, notaio:3500, agenzia:12000, agenziaPercent:false, agenziaPctVal:0.04,
+    primaCasa:false, lavori:5000, rendita:1084.56 },
+  mutuo: { enabled:true, importo:300000, ltv:1.0, tasso:0.04, durata:25, tipo:'fisso' },
+  costiFissi: { imuAuto:true, aliquotaImu:0.0106, imuManuale:1931, tari:400, condominio:1800,
+    assicurazione:500, assicBnb:false, assicBnbVal:800, manutenzione:1500, commercialista:600,
+    pmOn:false, pmPercent:0.20 },
+  fiscale: { regime:'ced21', redditoComplessivo:30000, impostaSoggiorno:3.5 },
+  proiezioni: { rivalutazione:0.02, crescitaRicavi:0.03, inflazioneCosti:0.025, annoUscita:10, orizzonte:25 },
+  scenarios: [
+    { id:1, nome:'B&B 3 camere — base case', tipo:'bnb',
+      bnbCamere:[ {adr:90,occ:0.8,bagnoPrivato:true}, {adr:70,occ:0.8,bagnoPrivato:false}, {adr:70,occ:0.8,bagnoPrivato:false} ],
+      mix:{booking:100,airbnb:0,diretti:0}, durataMedia:3, costoPulizia:25, biancheriaMese:150, utenzeMese:400,
+      affittoStanze:[], affUtenzeMese:150 }
+  ]
+};
+const STORAGE_KEY = 'bnb-simulator-boiardo-v1';
+function loadState(){
+  try { const s = localStorage.getItem(STORAGE_KEY); if(s) return {...DEFAULT_STATE, ...JSON.parse(s)}; } catch(e){}
+  return DEFAULT_STATE;
+}
+
+/* ============================ UI KIT ============================ */
+function Card({children, className=''}){ return <div className={`bg-white rounded-xl shadow-sm border border-gray-100 p-5 ${className}`}>{children}</div>; }
+function SectionTitle({children, sub}){ return (<div className="mb-4"><h3 className="text-navy font-bold text-lg">{children}</h3>{sub && <p className="text-sm text-gray-500 mt-0.5">{sub}</p>}</div>); }
+function Info({text}){ const [o,setO]=useState(false);
+  return <span className="relative inline-block ml-1 align-middle">
+    <span onMouseEnter={()=>setO(true)} onMouseLeave={()=>setO(false)} className="cursor-help text-gold text-xs border border-gold rounded-full w-4 h-4 inline-flex items-center justify-center">i</span>
+    {o && <span className="absolute z-50 left-5 top-0 w-56 bg-navy text-white text-xs rounded-lg p-2 shadow-lg">{text}</span>}
+  </span>; }
+
+function Num({label, value, onChange, suffix='€', step=100, min=0, max, info, decimals=false}){
+  return (<div className="mb-3">
+    <label className="block text-sm text-gray-600 mb-1">{label}{info && <Info text={info}/>}</label>
+    <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden focus-within:border-gold">
+      <input type="number" value={value} step={step} min={min} max={max}
+        onChange={e=>{ let v = e.target.value===''?0:(decimals?parseFloat(e.target.value):parseFloat(e.target.value)); if(min!=null&&v<min)v=min; onChange(Number.isNaN(v)?0:v); }}
+        className="flex-1 px-3 py-2 outline-none text-navy font-medium w-full" />
+      <span className="px-3 text-gray-400 text-sm bg-gray-50 py-2">{suffix}</span>
+    </div>
+  </div>);
+}
+function Slider({label, value, onChange, min, max, step, fmt, info}){
+  return (<div className="mb-4">
+    <div className="flex justify-between text-sm mb-1">
+      <span className="text-gray-600">{label}{info && <Info text={info}/>}</span>
+      <span className="text-navy font-bold">{fmt? fmt(value): value}</span>
+    </div>
+    <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(parseFloat(e.target.value))} className="w-full" />
+  </div>);
+}
+function Toggle({label, value, onChange, labelOn, labelOff}){
+  return (<div className="flex items-center justify-between mb-3 gap-3">
+    <span className="text-sm text-gray-600">{label}</span>
+    <div className="inline-flex rounded-lg bg-gray-100 p-0.5 text-xs font-semibold shrink-0">
+      <button onClick={()=>onChange(false)} className={`px-3 py-1.5 rounded-md transition ${!value?'bg-white text-navy shadow-sm':'text-gray-400'}`}>{labelOff}</button>
+      <button onClick={()=>onChange(true)} className={`px-3 py-1.5 rounded-md transition ${value?'bg-navy text-white shadow-sm':'text-gray-400'}`}>{labelOn}</button>
+    </div>
+  </div>);
+}
+function ResultBar({r}){
+  const ok = r.cashFlow>=0;
+  return (<div className="no-print sticky top-0 z-30 mb-5 bg-white/95 backdrop-blur rounded-xl shadow-sm border border-gray-100 px-4 py-2.5 flex flex-wrap gap-x-5 gap-y-1 items-center text-sm">
+    <span className="font-bold text-navy">Base case</span>
+    <span className="text-gray-500">Cash flow <b className={ok?'text-pos':'text-neg'}>{fmtEur(r.cashFlowMese)}/mese</b></span>
+    <span className="text-gray-500">Yield netto <b className={r.yieldNetto<3?'text-neg':'text-navy'}>{fmtPct(r.yieldNetto)}</b></span>
+    <span className="text-gray-500">Break-even <b className="text-navy">{r.breakEven?fmtNum(r.breakEven,1)+' anni':'mai'}</b></span>
+    <span className={`ml-auto px-2.5 py-0.5 rounded-full text-xs font-bold ${ok?'bg-green-100 text-pos':'bg-red-100 text-neg'}`}>{ok?'✅ Sostenibile':'❌ In perdita'}</span>
+  </div>);
+}
+function Select({label, value, onChange, options, info}){
+  return (<div className="mb-3">
+    <label className="block text-sm text-gray-600 mb-1">{label}{info && <Info text={info}/>}</label>
+    <select value={value} onChange={e=>onChange(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-gold text-navy font-medium bg-white">
+      {options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  </div>);
+}
+function KPI({label, value, sub, tone='neutral', big}){
+  const toneCls = tone==='pos'?'text-pos':tone==='neg'?'text-neg':'text-navy';
+  return (<div className={`bg-white rounded-xl border border-gray-100 shadow-sm p-4 ${big?'col-span-2':''}`}>
+    <div className="text-xs text-gray-500 uppercase tracking-wide">{label}</div>
+    <div className={`font-extrabold ${big?'text-3xl':'text-xl'} ${toneCls} mt-1`}>{value}</div>
+    {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
+  </div>);
+}
+
+/* ============================ TOOLTIP CHART ============================ */
+function ChartTip({active, payload, label, isEur=true}){
+  if(!active||!payload||!payload.length) return null;
+  return (<div className="bg-navy text-white text-xs rounded-lg p-2 shadow-lg">
+    <div className="font-bold mb-1">{label}</div>
+    {payload.map((p,i)=><div key={i} style={{color:p.color}}>{p.name}: {isEur?fmtEur(p.value):fmtNum(p.value)}</div>)}
+  </div>);
+}
+
+/* ============================ APP ============================ */
+function App(){
+  const [st, setSt] = useState(loadState);
+  const [page, setPage] = useState('parametri');
+  const [whatif, setWhatif] = useState({ occ:80, tasso:4.0, adr:100 });
+
+  useEffect(()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(st)); }catch(e){} }, [st]);
+
+  const set = (key)=>(patch)=> setSt(s=>({...s, [key]: typeof patch==='function'?patch(s[key]):{...s[key],...patch}}));
+  const setAcq = set('acquisto'), setMut = set('mutuo'), setFissi = set('costiFissi'), setFisc = set('fiscale'), setProi = set('proiezioni');
+
+  const ctx = useMemo(()=>({acquisto:st.acquisto, mutuo:st.mutuo, costiFissi:st.costiFissi, fiscale:st.fiscale}), [st]);
+  const results = useMemo(()=> st.scenarios.map(sc=> ({sc, r:computeScenario(sc, ctx)})), [st.scenarios, ctx]);
+  const base = results[0];
+
+  const resetAll = ()=>{ if(confirm('Ripristinare tutti i valori di default?')) setSt(DEFAULT_STATE); };
+
+  const NAV = [
+    ['parametri','① Parametri'], ['scenari','② Scenari reddito'], ['costi','③ Costi & Tasse'],
+    ['dashboard','④ Dashboard'], ['proiezioni','⑤ Proiezioni 25 anni']
+  ];
+
+  return (<div className="min-h-screen flex flex-col md:flex-row">
+    {/* SIDEBAR */}
+    <aside className="no-print md:w-64 bg-navy text-white md:min-h-screen p-5 md:sticky md:top-0 md:h-screen flex flex-col">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-gold text-2xl">🏛️</span>
+        <span className="font-extrabold text-lg">B&B Simulator</span>
+      </div>
+      <div className="text-xs text-gray-300 mb-6 leading-tight">Via Matteo Boiardo 12/B<br/>Roma 00185 · Seminterrato A/2</div>
+      <nav className="space-y-1 flex-1">
+        {NAV.map(([k,l])=>(
+          <button key={k} onClick={()=>setPage(k)} className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition ${page===k?'bg-gold text-navy':'hover:bg-navy2 text-gray-200'}`}>{l}</button>
+        ))}
+      </nav>
+      <div className="mt-4 pt-4 border-t border-navy2 space-y-2">
+        <div className="bg-navy2 rounded-lg p-3">
+          <div className="text-[10px] uppercase text-gray-400">Cash flow base case</div>
+          <div className={`font-extrabold text-lg ${base.r.cashFlow>=0?'text-gold2':'text-red-400'}`}>{fmtEur(base.r.cashFlowMese)}/mese</div>
+        </div>
+        <button onClick={()=>window.print()} className="w-full text-xs bg-navy2 hover:bg-gold hover:text-navy rounded-lg py-2 transition">🖨️ Esporta PDF</button>
+        <button onClick={resetAll} className="w-full text-xs text-gray-400 hover:text-white py-1">↺ Reset default</button>
+      </div>
+      <div className="text-[10px] text-gray-500 mt-3">Domenico × Luca · uso interno</div>
+    </aside>
+
+    {/* MAIN */}
+    <main className="flex-1 p-4 md:p-8 max-w-6xl mx-auto w-full">
+      <ResultBar r={base.r} />
+      {page==='parametri' && <PageParametri st={st} setAcq={setAcq} setMut={setMut} base={base} ctx={ctx} />}
+      {page==='scenari' && <PageScenari st={st} setSt={setSt} results={results} />}
+      {page==='costi' && <PageCosti st={st} setFissi={setFissi} setFisc={setFisc} base={base} />}
+      {page==='dashboard' && <PageDashboard st={st} results={results} />}
+      {page==='proiezioni' && <PageProiezioni st={st} setProi={setProi} base={base} ctx={ctx} whatif={whatif} setWhatif={setWhatif} />}
+    </main>
+  </div>);
+}
+
+/* ============================ PAGINA 1: PARAMETRI ============================ */
+function PageParametri({st, setAcq, setMut, base, ctx}){
+  const a = st.acquisto, m = st.mutuo;
+  const vc = valoreCatastale(a.rendita, a.primaCasa);
+  const registro = impostaRegistro(a.rendita, a.primaCasa);
+  const agenzia = a.agenziaPercent ? a.prezzo*a.agenziaPctVal : a.agenzia;
+  const totInv = base.r.investimentoTotale;
+  const rataM = m.enabled ? rataMutuo(m.importo, m.tasso, m.durata) : 0;
+  const nRate = m.durata*12;
+  const totRestituito = rataM*nRate;
+  const totInteressi = totRestituito - m.importo;
+
+  return (<div>
+    <h2 className="text-2xl font-bold text-navy mb-1">① Parametri investimento</h2>
+    <p className="text-gray-500 mb-6">Tutto modificabile. I calcoli si aggiornano in tempo reale.</p>
+
+    <div className="grid md:grid-cols-2 gap-6">
+      {/* ACQUISTO */}
+      <Card>
+        <SectionTitle sub="Prezzo, oneri e imposte di trasferimento">Acquisto</SectionTitle>
+        <Slider label="Prezzo di acquisto" value={a.prezzo} min={200000} max={400000} step={5000} fmt={fmtEur} onChange={v=>setAcq({prezzo:v})}/>
+        <Toggle label="Regime fiscale acquisto" value={a.primaCasa} labelOn="Prima casa" labelOff="Investimento" onChange={v=>setAcq({primaCasa:v})}/>
+        <Num label="Costi notaio" value={a.notaio} onChange={v=>setAcq({notaio:v})} step={100}/>
+        <Toggle label="Agenzia: importo o %" value={a.agenziaPercent} labelOn="% sul prezzo" labelOff="Importo €" onChange={v=>setAcq({agenziaPercent:v})}/>
+        {a.agenziaPercent
+          ? <Slider label="Provvigione agenzia" value={a.agenziaPctVal} min={0} max={0.06} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setAcq({agenziaPctVal:v})}/>
+          : <Num label="Costi agenzia" value={a.agenzia} onChange={v=>setAcq({agenzia:v})} step={500}/> }
+        <Num label="Lavori iniziali" value={a.lavori} onChange={v=>setAcq({lavori:v})} step={500} info="Ristrutturazione / messa a norma B&B"/>
+
+        <div className="bg-gray-50 rounded-lg p-3 mt-2 text-sm space-y-1">
+          <div className="font-semibold text-navy mb-1">Imposta di registro (calcolo)</div>
+          <Row k="Rendita catastale" v={fmtEur2(a.rendita)}/>
+          <Row k={`× 1,05 × ${a.primaCasa?'115,5':'126'}`} v={fmtEur(vc)} note="valore catastale"/>
+          <Row k={`× ${a.primaCasa?'2%':'9%'} (min €1.000)`} v={fmtEur(registro)} bold/>
+          <Row k="Imposta ipotecaria" v={fmtEur(50)}/>
+          <Row k="Imposta catastale" v={fmtEur(50)}/>
+          <p className="text-[11px] text-gray-400 pt-1">Coefficiente seconda casa cat. A: 126 (rendita×1,05×126). Alcuni usano 120 — qui 126 per prudenza.</p>
+        </div>
+        <div className="bg-navy text-white rounded-lg p-3 mt-3 flex justify-between items-center">
+          <span className="text-sm">Totale investimento</span>
+          <span className="font-extrabold text-xl text-gold2">{fmtEur(totInv)}</span>
+        </div>
+        <div className="flex justify-between text-sm mt-2 text-gray-600">
+          <span>Di cui cash (al netto mutuo)</span><span className="font-bold text-navy">{fmtEur(base.r.investimentoCash)}</span>
+        </div>
+      </Card>
+
+      {/* MUTUO */}
+      <Card>
+        <SectionTitle sub="Ammortamento alla francese">Mutuo</SectionTitle>
+        <Toggle label="Finanziamento" value={m.enabled} labelOn="Con mutuo" labelOff="Cash" onChange={v=>setMut({enabled:v})}/>
+        {m.enabled && <>
+          <Slider label="Importo mutuo" value={m.importo} min={50000} max={400000} step={5000} fmt={fmtEur} onChange={v=>setMut({importo:v})}/>
+          {m.importo>a.prezzo && <div className="text-xs text-neg -mt-2 mb-2">⚠️ Mutuo &gt; prezzo: solo se include ristrutturazione.</div>}
+          <div className="text-xs text-gray-500 -mt-2 mb-3">LTV: {fmtPct(a.prezzo>0?m.importo/a.prezzo*100:0,0)}</div>
+          <Slider label="Tasso annuo" value={m.tasso} min={0.01} max={0.07} step={0.0005} fmt={v=>fmtPct(v*100,2)} onChange={v=>setMut({tasso:v})}/>
+          <Slider label="Durata" value={m.durata} min={10} max={30} step={1} fmt={v=>v+' anni'} onChange={v=>setMut({durata:v})}/>
+          <Toggle label="Tipo tasso" value={m.tipo==='variabile'} labelOn="Variabile" labelOff="Fisso" onChange={v=>setMut({tipo:v?'variabile':'fisso'})}/>
+          {m.tipo==='variabile' && <div className="text-xs text-gold -mt-1 mb-2">ℹ️ Calcoli indicativi: il tasso variabile cambia nel tempo.</div>}
+
+          <div className="bg-gray-50 rounded-lg p-3 mt-2 text-sm space-y-1">
+            <Row k="Rata mensile" v={fmtEur2(rataM)} bold/>
+            <Row k="Rata annua" v={fmtEur(rataM*12)}/>
+            <Row k="Totale interessi" v={fmtEur(totInteressi)}/>
+            <Row k="Totale restituito" v={fmtEur(totRestituito)}/>
+          </div>
+        </>}
+        {!m.enabled && <div className="text-sm text-gray-500 bg-gray-50 rounded-lg p-4">Acquisto in contanti: nessuna rata, ma esborso cash pieno di {fmtEur(base.r.investimentoTotale)}.</div>}
+      </Card>
+
+      {/* PROPRIETÀ */}
+      <Card className="md:col-span-2">
+        <SectionTitle sub="Dati catastali e configurazione camere (modificabili per scenario nella pagina ②)">Proprietà</SectionTitle>
+        <div className="grid md:grid-cols-2 gap-x-8">
+          <Num label="Rendita catastale" value={a.rendita} onChange={v=>setAcq({rendita:v})} step={10} decimals info="Base per IMU e imposta di registro"/>
+          <div className="text-sm bg-gray-50 rounded-lg p-3">
+            <div className="font-semibold text-navy mb-1">Immobile</div>
+            <Row k="Superficie catastale" v="148 mq"/>
+            <Row k="Vani / Altezza" v="5 vani · 3,10 m"/>
+            <Row k="Foglio/Part./Sub." v="510 / 35 / 509"/>
+            <Row k="Layout" v="2 cam + 2 bagni"/>
+          </div>
+        </div>
+      </Card>
+    </div>
+  </div>);
+}
+function Row({k,v,note,bold}){ return (<div className="flex justify-between"><span className="text-gray-500">{k}{note&&<span className="text-[10px] text-gray-400 ml-1">{note}</span>}</span><span className={bold?'font-bold text-navy':'text-navy'}>{v}</span></div>); }
+
+/* ============================ PAGINA 2: SCENARI ============================ */
+function PageScenari({st, setSt, results}){
+  const updScen = (idx, patch)=> setSt(s=>({...s, scenarios: s.scenarios.map((sc,i)=> i===idx?{...sc,...patch}:sc)}));
+  const addScen = ()=>{ if(st.scenarios.length>=4) return;
+    const id = Math.max(...st.scenarios.map(s=>s.id))+1;
+    setSt(s=>({...s, scenarios:[...s.scenarios, {...JSON.parse(JSON.stringify(DEFAULT_STATE.scenarios[0])), id, nome:`Scenario ${s.scenarios.length+1}`}]}));
+  };
+  const delScen = (idx)=> setSt(s=>({...s, scenarios: s.scenarios.filter((_,i)=>i!==idx)}));
+
+  return (<div>
+    <div className="flex justify-between items-center mb-1">
+      <h2 className="text-2xl font-bold text-navy">② Scenari di reddito</h2>
+      <button onClick={addScen} disabled={st.scenarios.length>=4} className="no-print bg-navy text-white text-sm px-4 py-2 rounded-lg disabled:opacity-40 hover:bg-navy2">+ Aggiungi scenario ({st.scenarios.length}/4)</button>
+    </div>
+    <p className="text-gray-500 mb-6">Configura fino a 4 scenari. Si confrontano nella Dashboard.</p>
+
+    <div className="space-y-6">
+      {st.scenarios.map((sc, idx)=>(
+        <ScenarioEditor key={sc.id} sc={sc} idx={idx} color={COLORI_SCEN[idx]} r={results[idx].r}
+          onUpd={p=>updScen(idx,p)} onDel={st.scenarios.length>1?()=>delScen(idx):null}/>
+      ))}
+    </div>
+  </div>);
+}
+
+function ScenarioEditor({sc, idx, color, r, onUpd, onDel}){
+  const updCamera = (ci, patch)=> onUpd({bnbCamere: sc.bnbCamere.map((c,i)=>i===ci?{...c,...patch}:c)});
+  const addCamera = ()=> sc.bnbCamere.length<4 && onUpd({bnbCamere:[...sc.bnbCamere, {adr:70,occ:0.8,bagnoPrivato:false}]});
+  const delCamera = (ci)=> onUpd({bnbCamere: sc.bnbCamere.filter((_,i)=>i!==ci)});
+  const updStanza = (si, patch)=> onUpd({affittoStanze: sc.affittoStanze.map((s,i)=>i===si?{...s,...patch}:s)});
+  const addStanza = ()=> sc.affittoStanze.length<4 && onUpd({affittoStanze:[...sc.affittoStanze, {canone:650, vacancy:1, bagnoPrivato:false}]});
+  const delStanza = (si)=> onUpd({affittoStanze: sc.affittoStanze.filter((_,i)=>i!==si)});
+
+  const showBnb = sc.tipo==='bnb' || sc.tipo==='misto';
+  const showAff = sc.tipo==='affitto' || sc.tipo==='misto';
+  const mixTot = sc.mix.booking+sc.mix.airbnb+sc.mix.diretti;
+
+  return (<Card>
+    <div className="flex items-center gap-3 mb-4 border-b border-gray-100 pb-3">
+      <span className="w-3 h-3 rounded-full" style={{background:color}}></span>
+      <input value={sc.nome} onChange={e=>onUpd({nome:e.target.value})} className="font-bold text-navy text-lg outline-none flex-1 bg-transparent"/>
+      <div className={`text-sm font-bold px-3 py-1 rounded-lg ${r.cashFlow>=0?'bg-green-50 text-pos':'bg-red-50 text-neg'}`}>{fmtEur(r.cashFlowMese)}/mese</div>
+      {onDel && <button onClick={onDel} className="no-print text-gray-300 hover:text-neg text-xl">×</button>}
+    </div>
+
+    <div className="grid md:grid-cols-2 gap-6">
+      <div>
+        <Select label="Tipo di utilizzo" value={sc.tipo} onChange={v=>onUpd({tipo:v})} options={[
+          {value:'bnb',label:'B&B / Affitti brevi'},{value:'affitto',label:'Affitto tradizionale'},{value:'misto',label:'Misto'}
+        ]}/>
+
+        {showBnb && <div className="mt-2">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-sm font-semibold text-navy">Camere B&B</span>
+            <button onClick={addCamera} disabled={sc.bnbCamere.length>=4} className="no-print text-xs text-navy border border-navy rounded px-2 py-0.5 disabled:opacity-30">+ camera</button>
+          </div>
+          {sc.bnbCamere.map((c,ci)=>(
+            <div key={ci} className="bg-gray-50 rounded-lg p-3 mb-2">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-semibold text-gray-600">Camera {ci+1}</span>
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] text-gray-500 flex items-center gap-1"><input type="checkbox" checked={c.bagnoPrivato} onChange={e=>updCamera(ci,{bagnoPrivato:e.target.checked})}/> bagno privato</label>
+                  {sc.bnbCamere.length>1 && <button onClick={()=>delCamera(ci)} className="no-print text-gray-300 hover:text-neg">×</button>}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><div className="text-[11px] text-gray-500">ADR (€/notte)</div>
+                  <input type="number" value={c.adr} onChange={e=>updCamera(ci,{adr:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
+                <div><div className="text-[11px] text-gray-500">Occupazione {fmtPct(c.occ*100,0)}</div>
+                  <input type="range" min={0.5} max={0.95} step={0.01} value={c.occ} onChange={e=>updCamera(ci,{occ:parseFloat(e.target.value)})} className="w-full"/></div>
+              </div>
+            </div>
+          ))}
+
+          <div className="bg-gray-50 rounded-lg p-3 mt-1">
+            <div className="text-xs font-semibold text-gray-600 mb-2">Mix piattaforme {mixTot!==100 && <span className="text-neg">(somma {mixTot}% ≠ 100%)</span>}</div>
+            <MixSlider label="Booking (17%)" value={sc.mix.booking} onChange={v=>onUpd({mix:{...sc.mix,booking:v}})}/>
+            <MixSlider label="Airbnb (3% host)" value={sc.mix.airbnb} onChange={v=>onUpd({mix:{...sc.mix,airbnb:v}})}/>
+            <MixSlider label="Diretti (0%)" value={sc.mix.diretti} onChange={v=>onUpd({mix:{...sc.mix,diretti:v}})}/>
+            <div className="text-[11px] text-gray-500 mt-1">Commissione media effettiva: <b>{fmtPct(effComm(sc.mix)*100,1)}</b></div>
+          </div>
+        </div>}
+      </div>
+
+      <div>
+        {showBnb && <div className="mb-4">
+          <div className="text-sm font-semibold text-navy mb-2">Costi variabili B&B</div>
+          <Num label="Pulizia per cambio ospite" value={sc.costoPulizia} onChange={v=>onUpd({costoPulizia:v})} step={5}/>
+          <Num label="Durata media soggiorno (notti)" value={sc.durataMedia} onChange={v=>onUpd({durataMedia:v})} step={1} suffix="notti" info="Determina il n° di cambi/anno → costo pulizie"/>
+          <Num label="Biancheria/consumabili mensili" value={sc.biancheriaMese} onChange={v=>onUpd({biancheriaMese:v})} step={25}/>
+          <Num label="Utenze mensili (luce/gas/acqua/WiFi)" value={sc.utenzeMese} onChange={v=>onUpd({utenzeMese:v})} step={50}/>
+        </div>}
+
+        {showAff && <div>
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-sm font-semibold text-navy">Stanze in affitto</span>
+            <button onClick={addStanza} disabled={sc.affittoStanze.length>=4} className="no-print text-xs text-navy border border-navy rounded px-2 py-0.5 disabled:opacity-30">+ stanza</button>
+          </div>
+          {sc.affittoStanze.length===0 && <p className="text-xs text-gray-400 mb-2">Aggiungi almeno una stanza.</p>}
+          {sc.affittoStanze.map((s,si)=>(
+            <div key={si} className="bg-gray-50 rounded-lg p-3 mb-2 grid grid-cols-3 gap-2 items-end">
+              <div><div className="text-[11px] text-gray-500">Canone/mese</div><input type="number" value={s.canone} onChange={e=>updStanza(si,{canone:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
+              <div><div className="text-[11px] text-gray-500">Vacancy (mesi)</div><input type="number" value={s.vacancy} onChange={e=>updStanza(si,{vacancy:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
+              <div className="flex justify-end">{sc.affittoStanze.length>0 && <button onClick={()=>delStanza(si)} className="no-print text-gray-300 hover:text-neg">×</button>}</div>
+            </div>
+          ))}
+          <Num label="Utenze mensili a carico proprietario" value={sc.affUtenzeMese} onChange={v=>onUpd({affUtenzeMese:v})} step={25}/>
+        </div>}
+      </div>
+    </div>
+
+    {/* mini riepilogo scenario */}
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-4 pt-4 border-t border-gray-100 text-center">
+      <Mini k="Ricavo lordo" v={fmtEur(r.ricavoLordo)}/>
+      <Mini k="Notti vendute" v={fmtNum(r.notti)}/>
+      <Mini k="Costi op.+fissi" v={fmtEur(r.costiVariabili+r.sommaFissi+r.pmCost)}/>
+      <Mini k="Tasse" v={fmtEur(r.tasse)}/>
+      <Mini k="Yield netto" v={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'}/>
+    </div>
+  </Card>);
+}
+function MixSlider({label,value,onChange}){ return (<div className="flex items-center gap-2 mb-1">
+  <span className="text-[11px] text-gray-500 w-28">{label}</span>
+  <input type="range" min={0} max={100} step={5} value={value} onChange={e=>onChange(parseInt(e.target.value))} className="flex-1"/>
+  <span className="text-[11px] font-bold text-navy w-9 text-right">{value}%</span>
+</div>); }
+function Mini({k,v,tone}){ return (<div><div className="text-[10px] text-gray-400 uppercase">{k}</div><div className={`font-bold ${tone==='neg'?'text-neg':tone==='pos'?'text-pos':'text-navy'}`}>{v}</div></div>); }
+
+/* ============================ PAGINA 3: COSTI & TASSE ============================ */
+function PageCosti({st, setFissi, setFisc, base}){
+  const f = st.costiFissi, fi = st.fiscale, a = st.acquisto;
+  const imuCalc = calcImu(a.rendita, a.primaCasa, f.aliquotaImu);
+  return (<div>
+    <h2 className="text-2xl font-bold text-navy mb-1">③ Costi fissi & tasse</h2>
+    <p className="text-gray-500 mb-6">Costi annuali ricorrenti e regime fiscale. Validi per tutti gli scenari.</p>
+
+    <div className="grid md:grid-cols-2 gap-6">
+      <Card>
+        <SectionTitle>Costi fissi annuali</SectionTitle>
+        <div className="bg-gray-50 rounded-lg p-3 mb-3 text-sm">
+          <div className="font-semibold text-navy mb-1 flex justify-between">IMU {a.primaCasa && <span className="text-pos text-xs">ESENTE (prima casa)</span>}</div>
+          {!a.primaCasa && <>
+            <Row k="Rendita × 1,05 × 160" v={fmtEur(a.rendita*1.05*160)}/>
+            <Slider label="Aliquota Roma" value={f.aliquotaImu} min={0.0046} max={0.0114} step={0.0001} fmt={v=>fmtNum(v*1000,2)+'‰'} onChange={v=>setFissi({aliquotaImu:v})}/>
+            <Row k="IMU calcolata" v={fmtEur(imuCalc)} bold/>
+            <Toggle label="Usa valore" value={f.imuAuto} labelOn="Automatico" labelOff="Manuale" onChange={v=>setFissi({imuAuto:v})}/>
+            {!f.imuAuto && <Num label="IMU manuale" value={f.imuManuale} onChange={v=>setFissi({imuManuale:v})}/>}
+          </>}
+        </div>
+        <Num label="TARI (rifiuti)" value={f.tari} onChange={v=>setFissi({tari:v})} step={50} info="Per B&B più alta che uso residenziale"/>
+        <Num label="Spese condominiali" value={f.condominio} onChange={v=>setFissi({condominio:v})} step={100}/>
+        <Toggle label="Assicurazione" value={f.assicBnb} labelOn="B&B specifica" labelOff="RC standard" onChange={v=>setFissi({assicBnb:v})}/>
+        {f.assicBnb ? <Num label="Assicurazione B&B" value={f.assicBnbVal} onChange={v=>setFissi({assicBnbVal:v})} step={50}/>
+          : <Num label="Assicurazione RC" value={f.assicurazione} onChange={v=>setFissi({assicurazione:v})} step={50}/>}
+        <Num label="Manutenzione ordinaria" value={f.manutenzione} onChange={v=>setFissi({manutenzione:v})} step={100} info="Umidità, ritocchi, piccole riparazioni (seminterrato!)"/>
+        <Num label="Commercialista / gestione" value={f.commercialista} onChange={v=>setFissi({commercialista:v})} step={50}/>
+        <Toggle label="Property manager" value={f.pmOn} labelOn="Attivo" labelOff="No" onChange={v=>setFissi({pmOn:v})}/>
+        {f.pmOn && <Slider label="Compenso PM (% sui ricavi)" value={f.pmPercent} min={0.1} max={0.3} step={0.01} fmt={v=>fmtPct(v*100,0)} onChange={v=>setFissi({pmPercent:v})}/>}
+
+        <div className="bg-navy text-white rounded-lg p-3 mt-3 flex justify-between">
+          <span className="text-sm">Totale costi fissi/anno</span><span className="font-extrabold text-gold2">{fmtEur(base.r.sommaFissi)}</span>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle>Regime fiscale & tasse sul reddito</SectionTitle>
+        <Select label="Regime" value={fi.regime} onChange={v=>setFisc({regime:v})} options={[
+          {value:'ced21',label:'Cedolare secca 21% (1° immobile)'},
+          {value:'ced26',label:'Cedolare secca 26% (dal 2° immobile)'},
+          {value:'irpef',label:'IRPEF ordinaria (a scaglioni)'},
+          {value:'forfettario',label:'Forfettario (raramente applicabile)'},
+        ]}/>
+        {(fi.regime==='ced21'||fi.regime==='ced26') &&
+          <div className="bg-gold/10 border border-gold/30 rounded-lg p-3 text-sm text-navy">⚠️ La cedolare si calcola sui <b>ricavi LORDI</b>, non sul profitto. Aliquota {fi.regime==='ced21'?'21%':'26%'} → imposta {fmtEur(base.r.tasse)}.</div>}
+        {fi.regime==='irpef' && <>
+          <Num label="Tuo reddito complessivo (altri redditi)" value={fi.redditoComplessivo} onChange={v=>setFisc({redditoComplessivo:v})} step={1000} info="Serve a calcolare lo scaglione marginale su cui cade il reddito da affitto"/>
+          <div className="bg-gray-50 rounded-lg p-3 text-sm">
+            <div className="font-semibold text-navy mb-1">Scaglioni 2024/2025</div>
+            <Row k="fino a €28.000" v="23%"/><Row k="€28.001–50.000" v="35%"/><Row k="oltre €50.000" v="43%"/>
+            <Row k="Imposta marginale stimata" v={fmtEur(base.r.tasse)} bold/>
+            <p className="text-[11px] text-gray-400 pt-1">Base imponibile = ricavi − costi deducibili (variabili + fissi).</p>
+          </div>
+        </>}
+        {fi.regime==='forfettario' && <div className="bg-gold/10 border border-gold/30 rounded-lg p-3 text-sm text-navy">Stima: ricavi × 40% redditività × 15%. ⚠️ Le locazioni brevi di norma <b>non</b> rientrano nel forfettario — verifica con il commercialista.</div>}
+
+        <div className="border-t border-gray-100 mt-4 pt-4">
+          <div className="text-sm font-semibold text-navy mb-2">Imposta di soggiorno (flusso neutro)</div>
+          <Num label="Tariffa Roma" value={fi.impostaSoggiorno} onChange={v=>setFisc({impostaSoggiorno:v})} step={0.5} suffix="€/notte/pax" decimals info="La paga l'ospite, tu la incassi e la versi al Comune. Non incide sul tuo margine."/>
+          <p className="text-xs text-gray-400">Da incassare e riversare al Comune. Non è un costo per te, ma va gestito.</p>
+        </div>
+
+        <div className="bg-navy text-white rounded-lg p-3 mt-3 flex justify-between">
+          <span className="text-sm">Tasse sul reddito (base case)</span><span className="font-extrabold text-gold2">{fmtEur(base.r.tasse)}</span>
+        </div>
+      </Card>
+    </div>
+  </div>);
+}
+
+/* ============================ VERDETTO ============================ */
+function Verdict({r, st}){
+  const ok = r.cashFlow>=0;
+  const strong = ok && r.yieldNetto>=3;
+  let titolo, tono, bg;
+  if(!ok){ titolo='❌ Investimento NON sostenibile'; tono='text-neg'; bg='bg-red-50 border-neg'; }
+  else if(!strong){ titolo='⚠️ Sostenibile ma poco redditizio'; tono='text-gold'; bg='bg-gold/10 border-gold'; }
+  else { titolo='✅ Investimento sostenibile e redditizio'; tono='text-pos'; bg='bg-green-50 border-pos'; }
+
+  const punti = [];
+  punti.push(ok
+    ? `Genera ${fmtEur(r.cashFlowMese)}/mese di cassa netta dopo aver pagato tutto (tasse e rata mutuo inclusi).`
+    : `Brucia ${fmtEur(-r.cashFlowMese)}/mese: dovresti aggiungere soldi di tasca tua ogni mese.`);
+  punti.push(r.yieldNetto>=3
+    ? `Rende il ${fmtPct(r.yieldNetto)} netto sul capitale investito — sopra i titoli di stato.`
+    : `Rende solo il ${fmtPct(r.yieldNetto)} netto: meno di un BTP, con molto più rischio e lavoro.`);
+  punti.push(r.breakEven
+    ? `Recuperi i ${fmtEur(r.investimentoCash)} di cash iniziale in ${fmtNum(r.breakEven,1)} anni.`
+    : `Senza cash flow positivo, il capitale iniziale non si recupera con la gestione.`);
+  if(st.mutuo.enabled) punti.push(`La rata mutuo pesa ${fmtEur(r.rataAnnua)}/anno: è la voce di costo più grande.`);
+
+  return (<div className={`rounded-xl border ${bg} p-5 mb-6`}>
+    <div className={`text-xl font-extrabold ${tono} mb-2`}>{titolo}</div>
+    <ul className="space-y-1 text-sm text-navy/90">
+      {punti.map((p,i)=><li key={i} className="flex gap-2"><span className="text-gold">•</span><span>{p}</span></li>)}
+    </ul>
+  </div>);
+}
+
+/* ============================ PAGINA 4: DASHBOARD ============================ */
+function PageDashboard({st, results}){
+  const base = results[0];
+  const r = base.r;
+  const m = st.mutuo;
+
+  // cash flow cumulato 0..orizzonte (costante, base case + ogni scenario)
+  const orizzonte = st.proiezioni.orizzonte;
+  const cumData = useMemo(()=>{
+    const arr=[];
+    for(let t=0;t<=orizzonte;t++){
+      const row={anno:t};
+      results.forEach((res,i)=>{ row['s'+i] = -res.r.investimentoCash + res.r.cashFlow*t; });
+      arr.push(row);
+    }
+    return arr;
+  }, [results, orizzonte]);
+
+  // breakdown costi base case
+  const pieData = [
+    {name:'Commissioni', value:r.commissioni},
+    {name:'Pulizie', value:r.pulizie},
+    {name:'Biancheria', value:r.biancheria},
+    {name:'Utenze', value:r.utenzeBnb+r.utenzeAff},
+    {name:'IMU', value:r.imuVal},
+    {name:'Condominio', value:st.costiFissi.condominio},
+    {name:'Manutenzione', value:st.costiFissi.manutenzione},
+    {name:'Altri fissi', value:r.assicurazione+st.costiFissi.commercialista+st.costiFissi.tari},
+    {name:'Tasse', value:r.tasse},
+    {name:'Rata mutuo', value:r.rataAnnua},
+  ].filter(d=>d.value>0);
+
+  const barData = results.map((res,i)=>({nome:res.sc.nome, cashflow:res.r.cashFlowMese, fill:COLORI_SCEN[i]}));
+
+  return (<div>
+    <h2 className="text-2xl font-bold text-navy mb-1">④ Dashboard risultati</h2>
+    <p className="text-gray-500 mb-4">Base case: <b>{base.sc.nome}</b>. Tutti gli scenari nei grafici di confronto.</p>
+
+    <Verdict r={r} st={st} />
+
+    {/* ALERT */}
+    {r.cashFlow<0 && <div className="bg-red-50 border border-neg text-neg rounded-xl p-4 mb-4 font-semibold">⚠️ Attenzione: in questo scenario perdi {fmtEur(-r.cashFlowMese)} al mese ({fmtEur(-r.cashFlow)}/anno).</div>}
+    {r.cashFlow>=0 && r.yieldNetto<3 && <div className="bg-gold/10 border border-gold text-navy rounded-xl p-4 mb-4 font-semibold">📉 Yield netto {fmtPct(r.yieldNetto)} — inferiore ai titoli di stato. Rischio non remunerato.</div>}
+
+    {/* KPI */}
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <KPI label="Ricavo lordo/anno" value={fmtEur(r.ricavoLordo)}/>
+      <KPI label="Costi totali/anno" value={fmtEur(r.costiVariabili+r.sommaFissi+r.pmCost+r.tasse)} sub="op.+fissi+tasse"/>
+      <KPI label="Netto ante mutuo" value={fmtEur(r.nettoAnteMutuo)} tone={r.nettoAnteMutuo>=0?'pos':'neg'}/>
+      <KPI label="Cash flow/anno" value={fmtEur(r.cashFlow)} tone={r.cashFlow>=0?'pos':'neg'} sub={`${fmtEur(r.cashFlowMese)}/mese`}/>
+      <KPI label="Yield lordo" value={fmtPct(r.yieldLordo)} sub="ricavo/prezzo"/>
+      <KPI label="Yield netto" value={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'} sub="netto/investimento"/>
+      <KPI label="Break-even" value={r.breakEven? fmtNum(r.breakEven,1)+' anni':'Mai'} tone={r.breakEven?'neutral':'neg'} sub="recupero cash"/>
+      <KPI label="ROI a 10 anni" value={r.investimentoCash>0? fmtPct(r.cashFlow*10/r.investimentoCash*100):'—'} sub="cash flow cumulato"/>
+    </div>
+
+    <div className="grid md:grid-cols-2 gap-6 mb-6">
+      {/* CASH FLOW CUMULATO */}
+      <Card>
+        <SectionTitle sub="Esborso iniziale recuperato quando la linea supera lo zero">Cash flow cumulato</SectionTitle>
+        <ResponsiveContainer width="100%" height={280}>
+          <LineChart data={cumData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
+            <XAxis dataKey="anno" tick={{fontSize:11}} label={{value:'anni',position:'insideBottomRight',fontSize:10}}/>
+            <YAxis tick={{fontSize:11}} tickFormatter={v=>fmtNum(v/1000)+'k'}/>
+            <Tooltip content={<ChartTip/>}/>
+            <ReferenceLine y={0} stroke="#c0392b" strokeDasharray="4 4"/>
+            {results.map((res,i)=><Line key={i} type="monotone" dataKey={'s'+i} name={res.sc.nome} stroke={COLORI_SCEN[i]} strokeWidth={2} dot={false}/>)}
+            <Legend wrapperStyle={{fontSize:11}}/>
+          </LineChart>
+        </ResponsiveContainer>
+      </Card>
+
+      {/* BREAKDOWN COSTI */}
+      <Card>
+        <SectionTitle sub="Dove vanno i ricavi nel base case">Breakdown costi annui</SectionTitle>
+        <ResponsiveContainer width="100%" height={280}>
+          <PieChart>
+            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} label={(e)=>fmtNum(e.value/1000)+'k'} labelLine={false}>
+              {pieData.map((e,i)=><Cell key={i} fill={COLORI_PIE[i%COLORI_PIE.length]}/>)}
+            </Pie>
+            <Tooltip content={<ChartTip/>}/>
+            <Legend wrapperStyle={{fontSize:11}}/>
+          </PieChart>
+        </ResponsiveContainer>
+      </Card>
+    </div>
+
+    {/* CONFRONTO SCENARI BARRE */}
+    {results.length>1 && <Card className="mb-6">
+      <SectionTitle sub="Cash flow mensile per scenario">Confronto scenari</SectionTitle>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={barData}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
+          <XAxis dataKey="nome" tick={{fontSize:10}}/>
+          <YAxis tick={{fontSize:11}} tickFormatter={v=>fmtNum(v)}/>
+          <Tooltip content={<ChartTip/>}/>
+          <ReferenceLine y={0} stroke="#999"/>
+          <Bar dataKey="cashflow" name="Cash flow/mese">{barData.map((e,i)=><Cell key={i} fill={e.cashflow>=0?e.fill:'#c0392b'}/>)}</Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </Card>}
+
+    {/* TABELLA RIEPILOGO */}
+    <Card>
+      <SectionTitle>Tabella riepilogativa scenari</SectionTitle>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-gray-500 border-b">
+            <th className="py-2">Voce</th>
+            {results.map((res,i)=><th key={i} className="py-2 text-right" style={{color:COLORI_SCEN[i]}}>{res.sc.nome}</th>)}
+          </tr></thead>
+          <tbody>
+            {[
+              ['Ricavo lordo', x=>fmtEur(x.ricavoLordo)],
+              ['Costi operativi', x=>fmtEur(x.costiVariabili)],
+              ['Costi fissi', x=>fmtEur(x.sommaFissi)],
+              ['Property manager', x=>fmtEur(x.pmCost)],
+              ['Tasse', x=>fmtEur(x.tasse)],
+              ['Netto ante mutuo', x=>fmtEur(x.nettoAnteMutuo)],
+              ['Rata mutuo/anno', x=>fmtEur(x.rataAnnua)],
+            ].map(([lbl,fn],ri)=>(
+              <tr key={ri} className="border-b border-gray-50">
+                <td className="py-1.5 text-gray-600">{lbl}</td>
+                {results.map((res,i)=><td key={i} className="py-1.5 text-right text-navy">{fn(res.r)}</td>)}
+              </tr>
+            ))}
+            <tr className="border-b-2 border-navy font-bold">
+              <td className="py-2 text-navy">Cash flow finale</td>
+              {results.map((res,i)=><td key={i} className={`py-2 text-right ${res.r.cashFlow>=0?'text-pos':'text-neg'}`}>{fmtEur(res.r.cashFlow)}</td>)}
+            </tr>
+            <tr><td className="py-1.5 text-gray-600">Yield netto</td>
+              {results.map((res,i)=><td key={i} className="py-1.5 text-right text-navy">{fmtPct(res.r.yieldNetto)}</td>)}</tr>
+            <tr><td className="py-1.5 text-gray-600">Break-even</td>
+              {results.map((res,i)=><td key={i} className="py-1.5 text-right text-navy">{res.r.breakEven?fmtNum(res.r.breakEven,1)+' anni':'Mai'}</td>)}</tr>
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  </div>);
+}
+
+/* ============================ PAGINA 5: PROIEZIONI ============================ */
+function PageProiezioni({st, setProi, base, ctx, whatif, setWhatif}){
+  const p = st.proiezioni;
+  const sc = base.sc;
+  const m = st.mutuo;
+
+  // proiezione anno per anno
+  const proj = useMemo(()=>{
+    const rows=[];
+    for(let t=1;t<=p.orizzonte;t++){
+      const gRic = Math.pow(1+p.crescitaRicavi, t-1);
+      const gCost = Math.pow(1+p.inflazioneCosti, t-1);
+      const r0 = base.r;
+      const ricavo = r0.ricavoLordo*gRic;
+      const costiOp = (r0.costiVariabili)*gCost;
+      const costiFissi = r0.sommaFissi*gCost;
+      const pm = r0.pmCost*gRic;
+      // tasse ricalcolate (cedolare su lordo; irpef approssimata scalando)
+      let tasse;
+      if(st.fiscale.regime==='ced21') tasse=ricavo*0.21;
+      else if(st.fiscale.regime==='ced26') tasse=ricavo*0.26;
+      else if(st.fiscale.regime==='forfettario') tasse=ricavo*0.40*0.15;
+      else { const baseImp=Math.max(ricavo-costiOp-costiFissi-pm,0); tasse=irpefTax(st.fiscale.redditoComplessivo+baseImp)-irpefTax(st.fiscale.redditoComplessivo); }
+      const netto = ricavo-costiOp-costiFissi-pm-tasse;
+      const rata = (m.enabled && t<=m.durata)? r0.rataAnnua : 0;
+      const cf = netto-rata;
+      const valore = ctx.acquisto.prezzo*Math.pow(1+p.rivalutazione,t);
+      const debito = m.enabled? debitoResiduo(m.importo,m.tasso,m.durata,t):0;
+      rows.push({anno:t, ricavo, costiTot:costiOp+costiFissi+pm+tasse, netto, rata, cf, debito, valore, equity:valore-debito});
+    }
+    return rows;
+  }, [st, base, ctx, p]);
+
+  // IRR con uscita all'anno annoUscita
+  const irrVal = useMemo(()=>{
+    const X = Math.min(p.annoUscita, p.orizzonte);
+    const flussi=[-base.r.investimentoCash];
+    for(let t=1;t<=X;t++){
+      const row=proj[t-1];
+      let cf=row.cf;
+      if(t===X) cf += (row.valore - row.debito) - (ctx.acquisto.prezzo*0.03); // valore uscita netto ~3% costi vendita
+      flussi.push(cf);
+    }
+    return irr(flussi);
+  }, [proj, base, p, ctx]);
+
+  // WHAT-IF live sul base case
+  const wifBase = computeScenario(sc, ctx);
+  const wif = computeScenario(sc, ctx, { occMul: whatif.occ/80, tasso: whatif.tasso/100, adrMul: whatif.adr/100 });
+
+  return (<div>
+    <h2 className="text-2xl font-bold text-navy mb-1">⑤ Proiezioni & simulazioni</h2>
+    <p className="text-gray-500 mb-6">Orizzonte {p.orizzonte} anni sul base case "{sc.nome}".</p>
+
+    <Card className="mb-6">
+      <SectionTitle>Parametri di proiezione</SectionTitle>
+      <div className="grid md:grid-cols-4 gap-x-8">
+        <Slider label="Rivalutazione immobile/anno" value={p.rivalutazione} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({rivalutazione:v})}/>
+        <Slider label="Crescita ricavi/anno" value={p.crescitaRicavi} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({crescitaRicavi:v})}/>
+        <Slider label="Inflazione costi/anno" value={p.inflazioneCosti} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({inflazioneCosti:v})}/>
+        <Slider label="Anno di uscita (per IRR)" value={p.annoUscita} min={3} max={p.orizzonte} step={1} fmt={v=>v+' anni'} onChange={v=>setProi({annoUscita:v})}/>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+        <KPI label={`IRR uscita anno ${p.annoUscita}`} value={irrVal!=null? fmtPct(irrVal*100):'n/d'} tone={irrVal>0.05?'pos':irrVal>0?'neutral':'neg'} sub="rendimento operazione"/>
+        <KPI label={`Equity anno ${p.annoUscita}`} value={fmtEur(proj[Math.min(p.annoUscita,p.orizzonte)-1].equity)} sub="valore − debito"/>
+        <KPI label={`Valore immobile anno ${p.orizzonte}`} value={fmtEur(proj[p.orizzonte-1].valore)}/>
+        <KPI label="Cash flow cumulato" value={fmtEur(proj.slice(0,p.annoUscita).reduce((a,r)=>a+r.cf,0))} sub={`primi ${p.annoUscita} anni`}/>
+      </div>
+    </Card>
+
+    <Card className="mb-6">
+      <SectionTitle sub="Quando le linee si incrociano hai equity positiva">Valore immobile vs debito residuo</SectionTitle>
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={proj}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
+          <XAxis dataKey="anno" tick={{fontSize:11}}/>
+          <YAxis tick={{fontSize:11}} tickFormatter={v=>fmtNum(v/1000)+'k'}/>
+          <Tooltip content={<ChartTip/>}/>
+          <Line type="monotone" dataKey="valore" name="Valore immobile" stroke="#1f9d55" strokeWidth={2} dot={false}/>
+          <Line type="monotone" dataKey="debito" name="Debito residuo" stroke="#c0392b" strokeWidth={2} dot={false}/>
+          <Line type="monotone" dataKey="equity" name="Equity" stroke="#c5a028" strokeWidth={2} dot={false}/>
+          <Legend wrapperStyle={{fontSize:11}}/>
+        </LineChart>
+      </ResponsiveContainer>
+    </Card>
+
+    {/* WHAT IF */}
+    <Card className="mb-6">
+      <SectionTitle sub="Sposta gli slider: il cash flow si aggiorna live">Simulazione "What if"</SectionTitle>
+      <div className="grid md:grid-cols-3 gap-x-8 mb-4">
+        <Slider label="Occupazione" value={whatif.occ} min={40} max={95} step={1} fmt={v=>v+'%'} onChange={v=>setWhatif({...whatif,occ:v})}/>
+        <Slider label="Tasso mutuo" value={whatif.tasso} min={1} max={7} step={0.1} fmt={v=>fmtNum(v,1)+'%'} onChange={v=>setWhatif({...whatif,tasso:v})}/>
+        <Slider label="ADR (variazione)" value={whatif.adr} min={60} max={140} step={1} fmt={v=>v+'%'} onChange={v=>setWhatif({...whatif,adr:v})}/>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KPI label="Cash flow base" value={fmtEur(wifBase.cashFlowMese)+'/m'} tone={wifBase.cashFlow>=0?'pos':'neg'}/>
+        <KPI label="Cash flow simulato" value={fmtEur(wif.cashFlowMese)+'/m'} tone={wif.cashFlow>=0?'pos':'neg'}/>
+        <KPI label="Delta" value={fmtEur(wif.cashFlowMese-wifBase.cashFlowMese)+'/m'} tone={(wif.cashFlow-wifBase.cashFlow)>=0?'pos':'neg'}/>
+        <KPI label="Ricavo lordo sim." value={fmtEur(wif.ricavoLordo)}/>
+      </div>
+      <div className="grid md:grid-cols-3 gap-3 mt-3 text-sm">
+        <WhatBox q="Occupazione al 60%?" calc={()=>{const w=computeScenario(sc,ctx,{occMul:60/80}); return w;}}/>
+        <WhatBox q="Tasso mutuo al 6%?" calc={()=>computeScenario(sc,ctx,{tasso:0.06})}/>
+        <WhatBox q="ADR −20%?" calc={()=>computeScenario(sc,ctx,{adrMul:0.8})}/>
+      </div>
+    </Card>
+
+    {/* TABELLA 25 ANNI */}
+    <Card>
+      <SectionTitle>Proiezione anno per anno</SectionTitle>
+      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 bg-white"><tr className="text-gray-500 border-b text-right">
+            <th className="py-2 text-left">Anno</th><th>Ricavo</th><th>Costi tot.</th><th>Netto</th><th>Rata</th><th>Cash flow</th><th>Debito res.</th><th>Valore</th><th>Equity</th>
+          </tr></thead>
+          <tbody>
+            {proj.map(row=>(
+              <tr key={row.anno} className="border-b border-gray-50 text-right">
+                <td className="py-1 text-left font-medium text-navy">{row.anno}</td>
+                <td>{fmtEur(row.ricavo)}</td><td>{fmtEur(row.costiTot)}</td><td>{fmtEur(row.netto)}</td>
+                <td>{fmtEur(row.rata)}</td>
+                <td className={row.cf>=0?'text-pos font-semibold':'text-neg font-semibold'}>{fmtEur(row.cf)}</td>
+                <td className="text-neg">{fmtEur(row.debito)}</td><td className="text-pos">{fmtEur(row.valore)}</td>
+                <td className="font-semibold text-navy">{fmtEur(row.equity)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  </div>);
+}
+function WhatBox({q, calc}){
+  const r = calc();
+  return (<div className={`rounded-lg p-3 border ${r.cashFlow>=0?'border-green-200 bg-green-50':'border-red-200 bg-red-50'}`}>
+    <div className="text-gray-600 text-xs mb-1">{q}</div>
+    <div className={`font-bold ${r.cashFlow>=0?'text-pos':'text-neg'}`}>{fmtEur(r.cashFlowMese)}/mese</div>
+    <div className="text-[11px] text-gray-500">yield netto {fmtPct(r.yieldNetto)}</div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
