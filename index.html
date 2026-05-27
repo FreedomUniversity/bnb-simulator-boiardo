@@ -175,6 +175,68 @@ function computeScenario(sc, ctx, overrides={}){
   };
 }
 
+/* ============================ COSTO-OPPORTUNITÀ (ETF) ============================ */
+function computeETF(r, st){
+  const anni = Math.min(st.proiezioni.annoUscita, st.proiezioni.orizzonte);
+  const etfRate = 0.07; // rendimento storico medio azionario globale, lordo
+  const etfFinale = r.investimentoCash * Math.pow(1+etfRate, anni);
+  let cfCum = 0;
+  for(let t=1;t<=anni;t++) cfCum += r.cashFlow; // prudente: cash flow costante
+  const valore = st.acquisto.prezzo * Math.pow(1+st.proiezioni.rivalutazione, anni);
+  const debito = st.mutuo.enabled ? debitoResiduo(st.mutuo.importo, st.mutuo.tasso, st.mutuo.durata, anni) : 0;
+  const equity = valore - debito - st.acquisto.prezzo*0.03; // -3% costi di vendita
+  const bnbFinale = cfCum + equity;
+  return { anni, etfRate, etfFinale, bnbFinale, diff: bnbFinale - etfFinale, cfCum, equity };
+}
+
+/* ============================ DEAL SCORE (brutale, oggettivo) ============================ */
+function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+function computeDealScore(r, st){
+  const bonus = [];
+  const malus = [];
+
+  // --- BONUS ---
+  const cfPts = r.cashFlow>=0 ? clamp(r.cashFlowMese/600, 0, 1)*35 : 0;
+  bonus.push(['Cash flow mensile', cfPts, 35]);
+
+  const yPts = clamp(r.yieldNetto/6, 0, 1)*25;
+  bonus.push(['Rendimento netto', yPts, 25]);
+
+  const etf = computeETF(r, st);
+  const etfPts = etf.etfFinale>0 ? clamp(etf.bnbFinale/etf.etfFinale, 0, 1)*25 : 0;
+  bonus.push(['Batte un ETF?', etfPts, 25]);
+
+  const bePts = r.breakEven ? clamp((25 - r.breakEven)/15, 0, 1)*15 : 0;
+  bonus.push(['Velocità di rientro', bePts, 15]);
+
+  // --- MALUS oggettivi ---
+  malus.push(['Seminterrato (umidità, rivendita, vincoli)', -10]);
+  const occMedia = avgOcc(st.scenarios[0]);
+  if(occMedia>0.85) malus.push(['Occupazione ottimistica (>85%)', -12]);
+  else if(occMedia>0.80) malus.push(['Occupazione tirata (>80%)', -7]);
+  const ltv = st.mutuo.enabled && st.acquisto.prezzo>0 ? st.mutuo.importo/st.acquisto.prezzo : 0;
+  if(ltv>0.8) malus.push(['Leva alta (LTV >80%)', -5]);
+  if(r.yieldNetto<3.5) malus.push(['Rende meno di un BTP', -8]);
+
+  const totBonus = bonus.reduce((a,b)=>a+b[1],0);
+  const totMalus = malus.reduce((a,b)=>a+b[1],0);
+  const score = Math.round(clamp(totBonus + totMalus, 0, 100));
+
+  let label, color, frase;
+  if(score<=25){ label='🗑️ SPAZZATURA'; color='#7a1f12'; frase='Non comprare. Bruci soldi ogni mese.'; }
+  else if(score<=45){ label='🔴 PESSIMO'; color='#c0392b'; frase='Affare da fessi. I numeri non girano.'; }
+  else if(score<=60){ label='🟠 MEDIOCRE'; color='#d68910'; frase='Margine sottile, tanto lavoro per poco.'; }
+  else if(score<=75){ label='🟡 DISCRETO'; color='#c5a028'; frase='Funziona, ma non ti cambia la vita.'; }
+  else if(score<=88){ label='🟢 BUONO'; color='#1f9d55'; frase='Affare solido. I numeri tornano.'; }
+  else { label='💎 ORO'; color='#0e7a4a'; frase='Compra e ringrazia. Raro a questo prezzo.'; }
+
+  return { score, label, color, frase, bonus, malus, etf };
+}
+function avgOcc(sc){
+  const cam = (sc.bnbCamere||[]); if(!cam.length) return 0;
+  return cam.reduce((a,c)=>a+c.occ,0)/cam.length;
+}
+
 /* ============================ STATO DEFAULT ============================ */
 const DEFAULT_STATE = {
   acquisto: { prezzo:300000, notaio:3500, agenzia:12000, agenziaPercent:false, agenziaPctVal:0.04,
@@ -276,9 +338,11 @@ function ChartTip({active, payload, label, isEur=true}){
 function App(){
   const [st, setSt] = useState(loadState);
   const [page, setPage] = useState('parametri');
+  const [mode, setMode] = useState(()=>{ try{ return localStorage.getItem(STORAGE_KEY+'-mode')||'semplice'; }catch(e){ return 'semplice'; } });
   const [whatif, setWhatif] = useState({ occ:80, tasso:4.0, adr:100 });
 
   useEffect(()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(st)); }catch(e){} }, [st]);
+  useEffect(()=>{ try{ localStorage.setItem(STORAGE_KEY+'-mode', mode); }catch(e){} }, [mode]);
 
   const set = (key)=>(patch)=> setSt(s=>({...s, [key]: typeof patch==='function'?patch(s[key]):{...s[key],...patch}}));
   const setAcq = set('acquisto'), setMut = set('mutuo'), setFissi = set('costiFissi'), setFisc = set('fiscale'), setProi = set('proiezioni');
@@ -293,6 +357,8 @@ function App(){
     ['parametri','① Parametri'], ['scenari','② Scenari reddito'], ['costi','③ Costi & Tasse'],
     ['dashboard','④ Dashboard'], ['proiezioni','⑤ Proiezioni 25 anni']
   ];
+
+  if(mode==='semplice') return <PageSemplice st={st} setSt={setSt} base={base} goAdvanced={()=>setMode('avanzato')} resetAll={resetAll} />;
 
   return (<div className="min-h-screen flex flex-col md:flex-row">
     {/* SIDEBAR */}
@@ -312,6 +378,7 @@ function App(){
           <div className="text-[10px] uppercase text-gray-400">Cash flow base case</div>
           <div className={`font-extrabold text-lg ${base.r.cashFlow>=0?'text-gold2':'text-red-400'}`}>{fmtEur(base.r.cashFlowMese)}/mese</div>
         </div>
+        <button onClick={()=>setMode('semplice')} className="w-full text-xs bg-gold text-navy font-semibold rounded-lg py-2 transition hover:bg-gold2">← Torna alla modalità semplice</button>
         <button onClick={()=>window.print()} className="w-full text-xs bg-navy2 hover:bg-gold hover:text-navy rounded-lg py-2 transition">🖨️ Esporta PDF</button>
         <button onClick={resetAll} className="w-full text-xs text-gray-400 hover:text-white py-1">↺ Reset default</button>
       </div>
@@ -327,6 +394,120 @@ function App(){
       {page==='dashboard' && <PageDashboard st={st} results={results} />}
       {page==='proiezioni' && <PageProiezioni st={st} setProi={setProi} base={base} ctx={ctx} whatif={whatif} setWhatif={setWhatif} />}
     </main>
+  </div>);
+}
+
+/* ============================ MODALITÀ SEMPLICE (a prova di bimbo) ============================ */
+function BigSlider({label, value, display, min, max, step, onChange}){
+  return (<div>
+    <div className="flex justify-between items-baseline mb-1">
+      <span className="text-sm md:text-base text-gray-600 font-medium">{label}</span>
+      <span className="text-lg md:text-xl font-extrabold text-navy">{display}</span>
+    </div>
+    <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(parseFloat(e.target.value))} className="w-full h-2" />
+  </div>);
+}
+function PageSemplice({st, setSt, base, goAdvanced, resetAll}){
+  const r = base.r;
+  const deal = computeDealScore(r, st);
+  const etf = deal.etf;
+  const sc0 = st.scenarios[0];
+
+  const mutuoPct = (st.mutuo.enabled && st.acquisto.prezzo>0) ? st.mutuo.importo/st.acquisto.prezzo : (st.mutuo.enabled?0.8:0);
+  const adr = sc0.bnbCamere.length ? Math.round(sc0.bnbCamere.reduce((a,c)=>a+c.adr,0)/sc0.bnbCamere.length) : 80;
+  const occ = avgOcc(sc0);
+  const nCam = sc0.bnbCamere.length;
+
+  const setPrezzo = (v)=> setSt(s=>({...s, acquisto:{...s.acquisto, prezzo:v}, mutuo:{...s.mutuo, importo:Math.round(v*mutuoPct)} }));
+  const setMutuoPct = (p)=> setSt(s=>({...s, mutuo:{...s.mutuo, enabled:p>0, importo:Math.round(s.acquisto.prezzo*p)} }));
+  const setTasso = (v)=> setSt(s=>({...s, mutuo:{...s.mutuo, tasso:v} }));
+  const setAdr = (v)=> setSt(s=>({...s, scenarios:s.scenarios.map((sc,i)=> i===0?{...sc, bnbCamere:sc.bnbCamere.map(c=>({...c, adr:v}))}:sc)}));
+  const setOcc = (v)=> setSt(s=>({...s, scenarios:s.scenarios.map((sc,i)=> i===0?{...sc, bnbCamere:sc.bnbCamere.map(c=>({...c, occ:v}))}:sc)}));
+  const setNCam = (n)=> setSt(s=>({...s, scenarios:s.scenarios.map((sc,i)=>{
+    if(i!==0) return sc;
+    const arr=[]; for(let k=0;k<n;k++) arr.push(sc.bnbCamere[k] || {adr, occ, bagnoPrivato:k===0});
+    return {...sc, bnbCamere:arr};
+  })}));
+
+  const ok = r.cashFlow>=0;
+
+  return (<div className="min-h-screen bg-gradient-to-b from-navy to-navy2 text-white">
+    <div className="max-w-2xl mx-auto px-4 py-6">
+      {/* header */}
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <div className="text-gold font-extrabold text-lg">🏛️ Conviene questo B&B?</div>
+          <div className="text-xs text-gray-300">Via Matteo Boiardo 12/B, Roma · seminterrato</div>
+        </div>
+        <button onClick={goAdvanced} className="text-xs bg-white/10 hover:bg-white/20 rounded-lg px-3 py-2 transition">⚙️ Avanzata</button>
+      </div>
+
+      {/* DEAL SCORE GIGANTE */}
+      <div className="rounded-2xl p-6 mb-5 text-center" style={{background:deal.color}}>
+        <div className="text-sm uppercase tracking-widest text-white/70">Voto dell'affare</div>
+        <div className="text-7xl md:text-8xl font-black leading-none my-1">{deal.score}<span className="text-3xl text-white/60">/100</span></div>
+        <div className="text-2xl font-extrabold mt-1">{deal.label}</div>
+        <div className="text-base text-white/90 mt-2">{deal.frase}</div>
+      </div>
+
+      {/* 3 NUMERI CHE CONTANO */}
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        <BigStat label="In tasca al mese" value={fmtEur(r.cashFlowMese)} tone={ok}/>
+        <BigStat label="Rende l'anno" value={fmtPct(r.yieldNetto)} tone={r.yieldNetto>=3.5}/>
+        <BigStat label="Rientri in" value={r.breakEven?fmtNum(r.breakEven,0)+' anni':'MAI'} tone={!!r.breakEven}/>
+      </div>
+
+      {/* VERDETTO ETF brutale */}
+      <div className={`rounded-2xl p-5 mb-5 ${etf.diff>=0?'bg-green-900/40 border border-green-500/40':'bg-red-900/40 border border-red-500/40'}`}>
+        <div className="text-sm text-gray-300 mb-1">E se invece mettessi gli stessi {fmtEur(r.investimentoCash)} in un ETF al 7%?</div>
+        <div className="text-lg font-bold leading-snug">
+          {etf.diff>=0
+            ? <>Tra {etf.anni} anni col B&B avresti <span className="text-green-300">{fmtEur(etf.bnbFinale)}</span>, con l'ETF {fmtEur(etf.etfFinale)}. Batti l'ETF di <span className="text-green-300">{fmtEur(etf.diff)}</span> — ma lavorando.</>
+            : <>Tra {etf.anni} anni l'ETF ti darebbe <span className="text-red-300">{fmtEur(etf.etfFinale)}</span>, il B&B solo {fmtEur(etf.bnbFinale)}. Stai <span className="text-red-300">regalando {fmtEur(-etf.diff)}</span> per il piacere di fare il portiere.</>}
+        </div>
+      </div>
+
+      {/* PERCHÉ QUESTO VOTO (trasparenza brutale) */}
+      <div className="bg-white/5 rounded-2xl p-5 mb-5">
+        <div className="text-sm font-semibold text-gold mb-2">Perché questo voto (niente sconti)</div>
+        <div className="space-y-1 text-sm">
+          {deal.bonus.map(([l,p,max],i)=>(
+            <div key={'b'+i} className="flex justify-between"><span className="text-gray-300">{l}</span><span className="font-semibold text-green-300">+{Math.round(p)}<span className="text-gray-500">/{max}</span></span></div>
+          ))}
+          {deal.malus.map(([l,p],i)=>(
+            <div key={'m'+i} className="flex justify-between"><span className="text-gray-300">{l}</span><span className="font-semibold text-red-300">{p}</span></div>
+          ))}
+        </div>
+      </div>
+
+      {/* LE 6 LEVE */}
+      <div className="bg-white rounded-2xl p-5 text-navy">
+        <div className="text-sm font-bold text-navy mb-4">Cambia i numeri — il voto si aggiorna da solo</div>
+        <div className="space-y-5">
+          <BigSlider label="Prezzo di acquisto" value={st.acquisto.prezzo} display={fmtEur(st.acquisto.prezzo)} min={150000} max={450000} step={5000} onChange={setPrezzo}/>
+          <BigSlider label="Quanto mutuo (% del prezzo)" value={mutuoPct} display={mutuoPct===0?'Cash, no mutuo':fmtPct(mutuoPct*100,0)} min={0} max={1} step={0.05} onChange={setMutuoPct}/>
+          {mutuoPct>0 && <BigSlider label="Tasso del mutuo" value={st.mutuo.tasso} display={fmtPct(st.mutuo.tasso*100,2)} min={0.01} max={0.07} step={0.0005} onChange={setTasso}/>}
+          <BigSlider label="Numero di camere" value={nCam} display={nCam+(nCam===1?' camera':' camere')} min={1} max={4} step={1} onChange={setNCam}/>
+          <BigSlider label="Prezzo medio a notte" value={adr} display={fmtEur(adr)} min={40} max={160} step={5} onChange={setAdr}/>
+          <BigSlider label="Quanto è piena (occupazione)" value={occ} display={fmtPct(occ*100,0)} min={0.4} max={0.95} step={0.01} onChange={setOcc}/>
+        </div>
+        <div className="text-[11px] text-gray-400 mt-4 leading-snug">
+          Tutto il resto (tasse, IMU, pulizie, condominio) è già impostato su valori realistici per Roma. Per cambiarli o confrontare più scenari → <button onClick={goAdvanced} className="underline text-navy font-semibold">Modalità avanzata</button>.
+        </div>
+      </div>
+
+      <div className="flex justify-between items-center mt-5 text-xs text-gray-400">
+        <button onClick={resetAll} className="hover:text-white">↺ Reset</button>
+        <button onClick={()=>window.print()} className="hover:text-white">🖨️ Salva PDF</button>
+      </div>
+      <div className="text-center text-[11px] text-gray-500 mt-3">Stima per orientarti. Verifica i numeri col commercialista prima di firmare.</div>
+    </div>
+  </div>);
+}
+function BigStat({label, value, tone}){
+  return (<div className="bg-white/10 rounded-xl p-3 text-center">
+    <div className="text-[11px] text-gray-300 uppercase">{label}</div>
+    <div className={`text-xl md:text-2xl font-black mt-0.5 ${tone?'text-green-300':'text-red-300'}`}>{value}</div>
   </div>);
 }
 
