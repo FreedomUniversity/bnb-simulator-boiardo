@@ -103,9 +103,13 @@ function computeScenario(sc, ctx, overrides={}){
   const adrMul = overrides.adrMul ?? 1;
   const tassoOv = overrides.tasso ?? mutuo.tasso;
 
+  // Quali fonti di reddito contano in base al tipo scelto (no contributi "fantasma")
+  const useBnb = (sc.tipo==='bnb' || sc.tipo==='misto');
+  const useAff = (sc.tipo==='affitto' || sc.tipo==='misto');
+
   // --- Ricavi B&B ---
   let bnbRicavo=0, notti=0;
-  (sc.bnbCamere||[]).forEach(c=>{
+  if(useBnb) (sc.bnbCamere||[]).forEach(c=>{
     const occ = Math.min(c.occ*occMul, 1);
     const n = 365*occ;
     notti += n;
@@ -115,14 +119,14 @@ function computeScenario(sc, ctx, overrides={}){
   const commissioni = bnbRicavo * comm;
   const cambi = sc.durataMedia>0 ? notti/sc.durataMedia : 0;
   const pulizie = cambi * sc.costoPulizia;
-  const hasBnb = (sc.bnbCamere||[]).length>0;
+  const hasBnb = useBnb && (sc.bnbCamere||[]).length>0;
   const biancheria = hasBnb ? sc.biancheriaMese*12 : 0;
   const utenzeBnb = hasBnb ? sc.utenzeMese*12 : 0;
 
   // --- Ricavi affitto ---
   let affittoRicavo=0;
-  (sc.affittoStanze||[]).forEach(s=>{ affittoRicavo += s.canone*(12 - s.vacancy); });
-  const hasAff = (sc.affittoStanze||[]).length>0;
+  if(useAff) (sc.affittoStanze||[]).forEach(s=>{ affittoRicavo += s.canone*(12 - s.vacancy); });
+  const hasAff = useAff && (sc.affittoStanze||[]).length>0;
   const utenzeAff = hasAff ? sc.affUtenzeMese*12 : 0;
 
   const ricavoLordo = bnbRicavo + affittoRicavo;
