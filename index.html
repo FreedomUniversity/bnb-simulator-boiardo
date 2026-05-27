@@ -197,26 +197,26 @@ function computeDealScore(r, st){
 
   // --- BONUS ---
   const cfPts = r.cashFlow>=0 ? clamp(r.cashFlowMese/600, 0, 1)*35 : 0;
-  bonus.push(['Cash flow mensile', cfPts, 35]);
+  bonus.push(['Soldi che ti restano ogni mese', cfPts, 35]);
 
   const yPts = clamp(r.yieldNetto/6, 0, 1)*25;
-  bonus.push(['Rendimento netto', yPts, 25]);
+  bonus.push(['Quanto rende l’anno', yPts, 25]);
 
   const etf = computeETF(r, st);
   const etfPts = etf.etfFinale>0 ? clamp(etf.bnbFinale/etf.etfFinale, 0, 1)*25 : 0;
-  bonus.push(['Batte un ETF?', etfPts, 25]);
+  bonus.push(['Meglio che metterli in borsa?', etfPts, 25]);
 
   const bePts = r.breakEven ? clamp((25 - r.breakEven)/15, 0, 1)*15 : 0;
-  bonus.push(['Velocità di rientro', bePts, 15]);
+  bonus.push(['Quanto in fretta ti torna l’investito', bePts, 15]);
 
   // --- MALUS oggettivi ---
-  malus.push(['Seminterrato (umidità, rivendita, vincoli)', -10]);
+  malus.push(['È un seminterrato (umidità, difficile da rivendere)', -10]);
   const occMedia = avgOcc(st.scenarios[0]);
-  if(occMedia>0.85) malus.push(['Occupazione ottimistica (>85%)', -12]);
-  else if(occMedia>0.80) malus.push(['Occupazione tirata (>80%)', -7]);
+  if(occMedia>0.85) malus.push(['Conti troppo ottimisti: lo dai pieno oltre l’85%', -12]);
+  else if(occMedia>0.80) malus.push(['Conti tirati: lo dai pieno oltre l’80%', -7]);
   const ltv = st.mutuo.enabled && st.acquisto.prezzo>0 ? st.mutuo.importo/st.acquisto.prezzo : 0;
-  if(ltv>0.8) malus.push(['Leva alta (LTV >80%)', -5]);
-  if(r.yieldNetto<3.5) malus.push(['Rende meno di un BTP', -8]);
+  if(ltv>0.8) malus.push(['Troppo mutuo: oltre l’80% del prezzo', -5]);
+  if(r.yieldNetto<3.5) malus.push(['Rende meno dei titoli di Stato', -8]);
 
   const totBonus = bonus.reduce((a,b)=>a+b[1],0);
   const totMalus = malus.reduce((a,b)=>a+b[1],0);
@@ -248,7 +248,7 @@ const DEFAULT_STATE = {
   fiscale: { regime:'ced21', redditoComplessivo:30000, impostaSoggiorno:3.5 },
   proiezioni: { rivalutazione:0.02, crescitaRicavi:0.03, inflazioneCosti:0.025, annoUscita:10, orizzonte:25 },
   scenarios: [
-    { id:1, nome:'B&B 3 camere — base case', tipo:'bnb',
+    { id:1, nome:'B&B 3 camere — scenario base', tipo:'bnb',
       bnbCamere:[ {adr:90,occ:0.8,bagnoPrivato:true}, {adr:70,occ:0.8,bagnoPrivato:false}, {adr:70,occ:0.8,bagnoPrivato:false} ],
       mix:{booking:100,airbnb:0,diretti:0}, durataMedia:3, costoPulizia:25, biancheriaMese:150, utenzeMese:400,
       affittoStanze:[], affUtenzeMese:150 }
@@ -301,10 +301,10 @@ function Toggle({label, value, onChange, labelOn, labelOff}){
 function ResultBar({r}){
   const ok = r.cashFlow>=0;
   return (<div className="no-print sticky top-0 z-30 mb-5 bg-white/95 backdrop-blur rounded-xl shadow-sm border border-gray-100 px-4 py-2.5 flex flex-wrap gap-x-5 gap-y-1 items-center text-sm">
-    <span className="font-bold text-navy">Base case</span>
-    <span className="text-gray-500">Cash flow <b className={ok?'text-pos':'text-neg'}>{fmtEur(r.cashFlowMese)}/mese</b></span>
-    <span className="text-gray-500">Yield netto <b className={r.yieldNetto<3?'text-neg':'text-navy'}>{fmtPct(r.yieldNetto)}</b></span>
-    <span className="text-gray-500">Break-even <b className="text-navy">{r.breakEven?fmtNum(r.breakEven,1)+' anni':'mai'}</b></span>
+    <span className="font-bold text-navy">Scenario base</span>
+    <span className="text-gray-500">In tasca <b className={ok?'text-pos':'text-neg'}>{fmtEur(r.cashFlowMese)}/mese</b></span>
+    <span className="text-gray-500">Rendimento netto <b className={r.yieldNetto<3?'text-neg':'text-navy'}>{fmtPct(r.yieldNetto)}</b></span>
+    <span className="text-gray-500">Rientro <b className="text-navy">{r.breakEven?fmtNum(r.breakEven,1)+' anni':'mai'}</b></span>
     <span className={`ml-auto px-2.5 py-0.5 rounded-full text-xs font-bold ${ok?'bg-green-100 text-pos':'bg-red-100 text-neg'}`}>{ok?'✅ Sostenibile':'❌ In perdita'}</span>
   </div>);
 }
@@ -375,7 +375,7 @@ function App(){
       </nav>
       <div className="mt-4 pt-4 border-t border-navy2 space-y-2">
         <div className="bg-navy2 rounded-lg p-3">
-          <div className="text-[10px] uppercase text-gray-400">Cash flow base case</div>
+          <div className="text-[10px] uppercase text-gray-400">In tasca scenario base</div>
           <div className={`font-extrabold text-lg ${base.r.cashFlow>=0?'text-gold2':'text-red-400'}`}>{fmtEur(base.r.cashFlowMese)}/mese</div>
         </div>
         <button onClick={()=>setMode('semplice')} className="w-full text-xs bg-gold text-navy font-semibold rounded-lg py-2 transition hover:bg-gold2">← Torna alla modalità semplice</button>
@@ -457,13 +457,13 @@ function PageSemplice({st, setSt, base, goAdvanced, resetAll}){
         <BigStat label="Rientri in" value={r.breakEven?fmtNum(r.breakEven,0)+' anni':'MAI'} tone={!!r.breakEven}/>
       </div>
 
-      {/* VERDETTO ETF brutale */}
+      {/* CONFRONTO CON LA BORSA, brutale */}
       <div className={`rounded-2xl p-5 mb-5 ${etf.diff>=0?'bg-green-900/40 border border-green-500/40':'bg-red-900/40 border border-red-500/40'}`}>
-        <div className="text-sm text-gray-300 mb-1">E se invece mettessi gli stessi {fmtEur(r.investimentoCash)} in un ETF al 7%?</div>
+        <div className="text-sm text-gray-300 mb-1">E se invece mettessi gli stessi {fmtEur(r.investimentoCash)} in borsa (un fondo che rende il 7% l’anno)?</div>
         <div className="text-lg font-bold leading-snug">
           {etf.diff>=0
-            ? <>Tra {etf.anni} anni col B&B avresti <span className="text-green-300">{fmtEur(etf.bnbFinale)}</span>, con l'ETF {fmtEur(etf.etfFinale)}. Batti l'ETF di <span className="text-green-300">{fmtEur(etf.diff)}</span> — ma lavorando.</>
-            : <>Tra {etf.anni} anni l'ETF ti darebbe <span className="text-red-300">{fmtEur(etf.etfFinale)}</span>, il B&B solo {fmtEur(etf.bnbFinale)}. Stai <span className="text-red-300">regalando {fmtEur(-etf.diff)}</span> per il piacere di fare il portiere.</>}
+            ? <>Tra {etf.anni} anni col B&B avresti <span className="text-green-300">{fmtEur(etf.bnbFinale)}</span>, in borsa {fmtEur(etf.etfFinale)}. Guadagni <span className="text-green-300">{fmtEur(etf.diff)}</span> in più della borsa — ma devi lavorarci.</>
+            : <>Tra {etf.anni} anni in borsa avresti <span className="text-red-300">{fmtEur(etf.etfFinale)}</span>, col B&B solo {fmtEur(etf.bnbFinale)}. Stai <span className="text-red-300">buttando {fmtEur(-etf.diff)}</span> per il piacere di fare il portiere.</>}
         </div>
       </div>
 
@@ -485,7 +485,7 @@ function PageSemplice({st, setSt, base, goAdvanced, resetAll}){
         <div className="text-sm font-bold text-navy mb-4">Cambia i numeri — il voto si aggiorna da solo</div>
         <div className="space-y-5">
           <BigSlider label="Prezzo di acquisto" value={st.acquisto.prezzo} display={fmtEur(st.acquisto.prezzo)} min={150000} max={450000} step={5000} onChange={setPrezzo}/>
-          <BigSlider label="Quanto mutuo (% del prezzo)" value={mutuoPct} display={mutuoPct===0?'Cash, no mutuo':fmtPct(mutuoPct*100,0)} min={0} max={1} step={0.05} onChange={setMutuoPct}/>
+          <BigSlider label="Quanto mutuo (% del prezzo)" value={mutuoPct} display={mutuoPct===0?'In contanti, niente mutuo':fmtPct(mutuoPct*100,0)} min={0} max={1} step={0.05} onChange={setMutuoPct}/>
           {mutuoPct>0 && <BigSlider label="Tasso del mutuo" value={st.mutuo.tasso} display={fmtPct(st.mutuo.tasso*100,2)} min={0.01} max={0.07} step={0.0005} onChange={setTasso}/>}
           <BigSlider label="Numero di camere" value={nCam} display={nCam+(nCam===1?' camera':' camere')} min={1} max={4} step={1} onChange={setNCam}/>
           <BigSlider label="Prezzo medio a notte" value={adr} display={fmtEur(adr)} min={40} max={160} step={5} onChange={setAdr}/>
@@ -554,7 +554,7 @@ function PageParametri({st, setAcq, setMut, base, ctx}){
           <span className="font-extrabold text-xl text-gold2">{fmtEur(totInv)}</span>
         </div>
         <div className="flex justify-between text-sm mt-2 text-gray-600">
-          <span>Di cui cash (al netto mutuo)</span><span className="font-bold text-navy">{fmtEur(base.r.investimentoCash)}</span>
+          <span>Di tasca tua (senza il mutuo)</span><span className="font-bold text-navy">{fmtEur(base.r.investimentoCash)}</span>
         </div>
       </Card>
 
@@ -565,7 +565,7 @@ function PageParametri({st, setAcq, setMut, base, ctx}){
         {m.enabled && <>
           <Slider label="Importo mutuo" value={m.importo} min={50000} max={400000} step={5000} fmt={fmtEur} onChange={v=>setMut({importo:v})}/>
           {m.importo>a.prezzo && <div className="text-xs text-neg -mt-2 mb-2">⚠️ Mutuo &gt; prezzo: solo se include ristrutturazione.</div>}
-          <div className="text-xs text-gray-500 -mt-2 mb-3">LTV: {fmtPct(a.prezzo>0?m.importo/a.prezzo*100:0,0)}</div>
+          <div className="text-xs text-gray-500 -mt-2 mb-3">Finanzi col mutuo il {fmtPct(a.prezzo>0?m.importo/a.prezzo*100:0,0)} del prezzo</div>
           <Slider label="Tasso annuo" value={m.tasso} min={0.01} max={0.07} step={0.0005} fmt={v=>fmtPct(v*100,2)} onChange={v=>setMut({tasso:v})}/>
           <Slider label="Durata" value={m.durata} min={10} max={30} step={1} fmt={v=>v+' anni'} onChange={v=>setMut({durata:v})}/>
           <Toggle label="Tipo tasso" value={m.tipo==='variabile'} labelOn="Variabile" labelOff="Fisso" onChange={v=>setMut({tipo:v?'variabile':'fisso'})}/>
@@ -591,7 +591,7 @@ function PageParametri({st, setAcq, setMut, base, ctx}){
             <Row k="Superficie catastale" v="148 mq"/>
             <Row k="Vani / Altezza" v="5 vani · 3,10 m"/>
             <Row k="Foglio/Part./Sub." v="510 / 35 / 509"/>
-            <Row k="Layout" v="2 cam + 2 bagni"/>
+            <Row k="Disposizione" v="2 cam + 2 bagni"/>
           </div>
         </div>
       </Card>
@@ -666,7 +666,7 @@ function ScenarioEditor({sc, idx, color, r, onUpd, onDel}){
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div><div className="text-[11px] text-gray-500">ADR (€/notte)</div>
+                <div><div className="text-[11px] text-gray-500">Prezzo a notte (€)</div>
                   <input type="number" value={c.adr} onChange={e=>updCamera(ci,{adr:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
                 <div><div className="text-[11px] text-gray-500">Occupazione {fmtPct(c.occ*100,0)}</div>
                   <input type="range" min={0.5} max={0.95} step={0.01} value={c.occ} onChange={e=>updCamera(ci,{occ:parseFloat(e.target.value)})} className="w-full"/></div>
@@ -675,9 +675,9 @@ function ScenarioEditor({sc, idx, color, r, onUpd, onDel}){
           ))}
 
           <div className="bg-gray-50 rounded-lg p-3 mt-1">
-            <div className="text-xs font-semibold text-gray-600 mb-2">Mix piattaforme {mixTot!==100 && <span className="text-neg">(somma {mixTot}% ≠ 100%)</span>}</div>
+            <div className="text-xs font-semibold text-gray-600 mb-2">Da dove arrivano le prenotazioni {mixTot!==100 && <span className="text-neg">(somma {mixTot}% ≠ 100%)</span>}</div>
             <MixSlider label="Booking (17%)" value={sc.mix.booking} onChange={v=>onUpd({mix:{...sc.mix,booking:v}})}/>
-            <MixSlider label="Airbnb (3% host)" value={sc.mix.airbnb} onChange={v=>onUpd({mix:{...sc.mix,airbnb:v}})}/>
+            <MixSlider label="Airbnb (3% a te)" value={sc.mix.airbnb} onChange={v=>onUpd({mix:{...sc.mix,airbnb:v}})}/>
             <MixSlider label="Diretti (0%)" value={sc.mix.diretti} onChange={v=>onUpd({mix:{...sc.mix,diretti:v}})}/>
             <div className="text-[11px] text-gray-500 mt-1">Commissione media effettiva: <b>{fmtPct(effComm(sc.mix)*100,1)}</b></div>
           </div>
@@ -702,7 +702,7 @@ function ScenarioEditor({sc, idx, color, r, onUpd, onDel}){
           {sc.affittoStanze.map((s,si)=>(
             <div key={si} className="bg-gray-50 rounded-lg p-3 mb-2 grid grid-cols-3 gap-2 items-end">
               <div><div className="text-[11px] text-gray-500">Canone/mese</div><input type="number" value={s.canone} onChange={e=>updStanza(si,{canone:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
-              <div><div className="text-[11px] text-gray-500">Vacancy (mesi)</div><input type="number" value={s.vacancy} onChange={e=>updStanza(si,{vacancy:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
+              <div><div className="text-[11px] text-gray-500">Mesi sfitti</div><input type="number" value={s.vacancy} onChange={e=>updStanza(si,{vacancy:parseFloat(e.target.value)||0})} className="w-full px-2 py-1 border rounded text-sm"/></div>
               <div className="flex justify-end">{sc.affittoStanze.length>0 && <button onClick={()=>delStanza(si)} className="no-print text-gray-300 hover:text-neg">×</button>}</div>
             </div>
           ))}
@@ -717,7 +717,7 @@ function ScenarioEditor({sc, idx, color, r, onUpd, onDel}){
       <Mini k="Notti vendute" v={fmtNum(r.notti)}/>
       <Mini k="Costi op.+fissi" v={fmtEur(r.costiVariabili+r.sommaFissi+r.pmCost)}/>
       <Mini k="Tasse" v={fmtEur(r.tasse)}/>
-      <Mini k="Yield netto" v={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'}/>
+      <Mini k="Rendimento netto" v={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'}/>
     </div>
   </Card>);
 }
@@ -756,7 +756,7 @@ function PageCosti({st, setFissi, setFisc, base}){
           : <Num label="Assicurazione RC" value={f.assicurazione} onChange={v=>setFissi({assicurazione:v})} step={50}/>}
         <Num label="Manutenzione ordinaria" value={f.manutenzione} onChange={v=>setFissi({manutenzione:v})} step={100} info="Umidità, ritocchi, piccole riparazioni (seminterrato!)"/>
         <Num label="Commercialista / gestione" value={f.commercialista} onChange={v=>setFissi({commercialista:v})} step={50}/>
-        <Toggle label="Property manager" value={f.pmOn} labelOn="Attivo" labelOff="No" onChange={v=>setFissi({pmOn:v})}/>
+        <Toggle label="Gestore esterno" value={f.pmOn} labelOn="Attivo" labelOff="No" onChange={v=>setFissi({pmOn:v})}/>
         {f.pmOn && <Slider label="Compenso PM (% sui ricavi)" value={f.pmPercent} min={0.1} max={0.3} step={0.01} fmt={v=>fmtPct(v*100,0)} onChange={v=>setFissi({pmPercent:v})}/>}
 
         <div className="bg-navy text-white rounded-lg p-3 mt-3 flex justify-between">
@@ -792,7 +792,7 @@ function PageCosti({st, setFissi, setFisc, base}){
         </div>
 
         <div className="bg-navy text-white rounded-lg p-3 mt-3 flex justify-between">
-          <span className="text-sm">Tasse sul reddito (base case)</span><span className="font-extrabold text-gold2">{fmtEur(base.r.tasse)}</span>
+          <span className="text-sm">Tasse sul reddito (scenario base)</span><span className="font-extrabold text-gold2">{fmtEur(base.r.tasse)}</span>
         </div>
       </Card>
     </div>
@@ -834,7 +834,7 @@ function PageDashboard({st, results}){
   const r = base.r;
   const m = st.mutuo;
 
-  // cash flow cumulato 0..orizzonte (costante, base case + ogni scenario)
+  // cash flow cumulato 0..orizzonte (costante, scenario base + ogni scenario)
   const orizzonte = st.proiezioni.orizzonte;
   const cumData = useMemo(()=>{
     const arr=[];
@@ -846,7 +846,7 @@ function PageDashboard({st, results}){
     return arr;
   }, [results, orizzonte]);
 
-  // breakdown costi base case
+  // breakdown costi scenario base
   const pieData = [
     {name:'Commissioni', value:r.commissioni},
     {name:'Pulizie', value:r.pulizie},
@@ -864,30 +864,30 @@ function PageDashboard({st, results}){
 
   return (<div>
     <h2 className="text-2xl font-bold text-navy mb-1">④ Dashboard risultati</h2>
-    <p className="text-gray-500 mb-4">Base case: <b>{base.sc.nome}</b>. Tutti gli scenari nei grafici di confronto.</p>
+    <p className="text-gray-500 mb-4">Scenario base: <b>{base.sc.nome}</b>. Tutti gli scenari nei grafici di confronto.</p>
 
     <Verdict r={r} st={st} />
 
     {/* ALERT */}
     {r.cashFlow<0 && <div className="bg-red-50 border border-neg text-neg rounded-xl p-4 mb-4 font-semibold">⚠️ Attenzione: in questo scenario perdi {fmtEur(-r.cashFlowMese)} al mese ({fmtEur(-r.cashFlow)}/anno).</div>}
-    {r.cashFlow>=0 && r.yieldNetto<3 && <div className="bg-gold/10 border border-gold text-navy rounded-xl p-4 mb-4 font-semibold">📉 Yield netto {fmtPct(r.yieldNetto)} — inferiore ai titoli di stato. Rischio non remunerato.</div>}
+    {r.cashFlow>=0 && r.yieldNetto<3 && <div className="bg-gold/10 border border-gold text-navy rounded-xl p-4 mb-4 font-semibold">📉 Rendimento netto {fmtPct(r.yieldNetto)} — inferiore ai titoli di stato. Rischio non remunerato.</div>}
 
     {/* KPI */}
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
       <KPI label="Ricavo lordo/anno" value={fmtEur(r.ricavoLordo)}/>
       <KPI label="Costi totali/anno" value={fmtEur(r.costiVariabili+r.sommaFissi+r.pmCost+r.tasse)} sub="op.+fissi+tasse"/>
       <KPI label="Netto ante mutuo" value={fmtEur(r.nettoAnteMutuo)} tone={r.nettoAnteMutuo>=0?'pos':'neg'}/>
-      <KPI label="Cash flow/anno" value={fmtEur(r.cashFlow)} tone={r.cashFlow>=0?'pos':'neg'} sub={`${fmtEur(r.cashFlowMese)}/mese`}/>
-      <KPI label="Yield lordo" value={fmtPct(r.yieldLordo)} sub="ricavo/prezzo"/>
-      <KPI label="Yield netto" value={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'} sub="netto/investimento"/>
-      <KPI label="Break-even" value={r.breakEven? fmtNum(r.breakEven,1)+' anni':'Mai'} tone={r.breakEven?'neutral':'neg'} sub="recupero cash"/>
-      <KPI label="ROI a 10 anni" value={r.investimentoCash>0? fmtPct(r.cashFlow*10/r.investimentoCash*100):'—'} sub="cash flow cumulato"/>
+      <KPI label="In tasca/anno" value={fmtEur(r.cashFlow)} tone={r.cashFlow>=0?'pos':'neg'} sub={`${fmtEur(r.cashFlowMese)}/mese`}/>
+      <KPI label="Rendimento lordo" value={fmtPct(r.yieldLordo)} sub="ricavo/prezzo"/>
+      <KPI label="Rendimento netto" value={fmtPct(r.yieldNetto)} tone={r.yieldNetto<3?'neg':'pos'} sub="netto/investimento"/>
+      <KPI label="Rientro" value={r.breakEven? fmtNum(r.breakEven,1)+' anni':'Mai'} tone={r.breakEven?'neutral':'neg'} sub="per riavere i soldi messi"/>
+      <KPI label="Guadagno in 10 anni" value={r.investimentoCash>0? fmtPct(r.cashFlow*10/r.investimentoCash*100):'—'} sub="soldi accumulati"/>
     </div>
 
     <div className="grid md:grid-cols-2 gap-6 mb-6">
       {/* CASH FLOW CUMULATO */}
       <Card>
-        <SectionTitle sub="Esborso iniziale recuperato quando la linea supera lo zero">Cash flow cumulato</SectionTitle>
+        <SectionTitle sub="Esborso iniziale recuperato quando la linea supera lo zero">Soldi accumulati nel tempo</SectionTitle>
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={cumData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
@@ -903,7 +903,7 @@ function PageDashboard({st, results}){
 
       {/* BREAKDOWN COSTI */}
       <Card>
-        <SectionTitle sub="Dove vanno i ricavi nel base case">Breakdown costi annui</SectionTitle>
+        <SectionTitle sub="Dove vanno i ricavi nel scenario base">Dove vanno i soldi (costi annui)</SectionTitle>
         <ResponsiveContainer width="100%" height={280}>
           <PieChart>
             <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} label={(e)=>fmtNum(e.value/1000)+'k'} labelLine={false}>
@@ -918,7 +918,7 @@ function PageDashboard({st, results}){
 
     {/* CONFRONTO SCENARI BARRE */}
     {results.length>1 && <Card className="mb-6">
-      <SectionTitle sub="Cash flow mensile per scenario">Confronto scenari</SectionTitle>
+      <SectionTitle sub="In tasca mensile per scenario">Confronto scenari</SectionTitle>
       <ResponsiveContainer width="100%" height={220}>
         <BarChart data={barData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
@@ -926,7 +926,7 @@ function PageDashboard({st, results}){
           <YAxis tick={{fontSize:11}} tickFormatter={v=>fmtNum(v)}/>
           <Tooltip content={<ChartTip/>}/>
           <ReferenceLine y={0} stroke="#999"/>
-          <Bar dataKey="cashflow" name="Cash flow/mese">{barData.map((e,i)=><Cell key={i} fill={e.cashflow>=0?e.fill:'#c0392b'}/>)}</Bar>
+          <Bar dataKey="cashflow" name="In tasca/mese">{barData.map((e,i)=><Cell key={i} fill={e.cashflow>=0?e.fill:'#c0392b'}/>)}</Bar>
         </BarChart>
       </ResponsiveContainer>
     </Card>}
@@ -945,7 +945,7 @@ function PageDashboard({st, results}){
               ['Ricavo lordo', x=>fmtEur(x.ricavoLordo)],
               ['Costi operativi', x=>fmtEur(x.costiVariabili)],
               ['Costi fissi', x=>fmtEur(x.sommaFissi)],
-              ['Property manager', x=>fmtEur(x.pmCost)],
+              ['Gestore esterno', x=>fmtEur(x.pmCost)],
               ['Tasse', x=>fmtEur(x.tasse)],
               ['Netto ante mutuo', x=>fmtEur(x.nettoAnteMutuo)],
               ['Rata mutuo/anno', x=>fmtEur(x.rataAnnua)],
@@ -956,12 +956,12 @@ function PageDashboard({st, results}){
               </tr>
             ))}
             <tr className="border-b-2 border-navy font-bold">
-              <td className="py-2 text-navy">Cash flow finale</td>
+              <td className="py-2 text-navy">In tasca finale</td>
               {results.map((res,i)=><td key={i} className={`py-2 text-right ${res.r.cashFlow>=0?'text-pos':'text-neg'}`}>{fmtEur(res.r.cashFlow)}</td>)}
             </tr>
-            <tr><td className="py-1.5 text-gray-600">Yield netto</td>
+            <tr><td className="py-1.5 text-gray-600">Rendimento netto</td>
               {results.map((res,i)=><td key={i} className="py-1.5 text-right text-navy">{fmtPct(res.r.yieldNetto)}</td>)}</tr>
-            <tr><td className="py-1.5 text-gray-600">Break-even</td>
+            <tr><td className="py-1.5 text-gray-600">Rientro</td>
               {results.map((res,i)=><td key={i} className="py-1.5 text-right text-navy">{res.r.breakEven?fmtNum(res.r.breakEven,1)+' anni':'Mai'}</td>)}</tr>
           </tbody>
         </table>
@@ -1016,13 +1016,13 @@ function PageProiezioni({st, setProi, base, ctx, whatif, setWhatif}){
     return irr(flussi);
   }, [proj, base, p, ctx]);
 
-  // WHAT-IF live sul base case
+  // WHAT-IF live sul scenario base
   const wifBase = computeScenario(sc, ctx);
   const wif = computeScenario(sc, ctx, { occMul: whatif.occ/80, tasso: whatif.tasso/100, adrMul: whatif.adr/100 });
 
   return (<div>
     <h2 className="text-2xl font-bold text-navy mb-1">⑤ Proiezioni & simulazioni</h2>
-    <p className="text-gray-500 mb-6">Orizzonte {p.orizzonte} anni sul base case "{sc.nome}".</p>
+    <p className="text-gray-500 mb-6">Orizzonte {p.orizzonte} anni sul scenario base "{sc.nome}".</p>
 
     <Card className="mb-6">
       <SectionTitle>Parametri di proiezione</SectionTitle>
@@ -1030,27 +1030,27 @@ function PageProiezioni({st, setProi, base, ctx, whatif, setWhatif}){
         <Slider label="Rivalutazione immobile/anno" value={p.rivalutazione} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({rivalutazione:v})}/>
         <Slider label="Crescita ricavi/anno" value={p.crescitaRicavi} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({crescitaRicavi:v})}/>
         <Slider label="Inflazione costi/anno" value={p.inflazioneCosti} min={0} max={0.05} step={0.005} fmt={v=>fmtPct(v*100)} onChange={v=>setProi({inflazioneCosti:v})}/>
-        <Slider label="Anno di uscita (per IRR)" value={p.annoUscita} min={3} max={p.orizzonte} step={1} fmt={v=>v+' anni'} onChange={v=>setProi({annoUscita:v})}/>
+        <Slider label="Anno in cui rivendi" value={p.annoUscita} min={3} max={p.orizzonte} step={1} fmt={v=>v+' anni'} onChange={v=>setProi({annoUscita:v})}/>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-        <KPI label={`IRR uscita anno ${p.annoUscita}`} value={irrVal!=null? fmtPct(irrVal*100):'n/d'} tone={irrVal>0.05?'pos':irrVal>0?'neutral':'neg'} sub="rendimento operazione"/>
-        <KPI label={`Equity anno ${p.annoUscita}`} value={fmtEur(proj[Math.min(p.annoUscita,p.orizzonte)-1].equity)} sub="valore − debito"/>
+        <KPI label={`Rende l\u2019anno (se rivendi al ${p.annoUscita}\u00b0)`} value={irrVal!=null? fmtPct(irrVal*100):'n/d'} tone={irrVal>0.05?'pos':irrVal>0?'neutral':'neg'} sub="tutto incluso, anche la rivendita"/>
+        <KPI label={`Quanto \u00e8 tuo (anno ${p.annoUscita})`} value={fmtEur(proj[Math.min(p.annoUscita,p.orizzonte)-1].equity)} sub="valore casa meno debito"/>
         <KPI label={`Valore immobile anno ${p.orizzonte}`} value={fmtEur(proj[p.orizzonte-1].valore)}/>
-        <KPI label="Cash flow cumulato" value={fmtEur(proj.slice(0,p.annoUscita).reduce((a,r)=>a+r.cf,0))} sub={`primi ${p.annoUscita} anni`}/>
+        <KPI label="Soldi accumulati nel tempo" value={fmtEur(proj.slice(0,p.annoUscita).reduce((a,r)=>a+r.cf,0))} sub={`primi ${p.annoUscita} anni`}/>
       </div>
     </Card>
 
     <Card className="mb-6">
-      <SectionTitle sub="Quando le linee si incrociano hai equity positiva">Valore immobile vs debito residuo</SectionTitle>
+      <SectionTitle sub="Quando il verde supera il rosso, la casa vale pi\u00f9 di quanto devi alla banca">Valore della casa contro debito del mutuo</SectionTitle>
       <ResponsiveContainer width="100%" height={280}>
         <LineChart data={proj}>
           <CartesianGrid strokeDasharray="3 3" stroke="#eee"/>
           <XAxis dataKey="anno" tick={{fontSize:11}}/>
           <YAxis tick={{fontSize:11}} tickFormatter={v=>fmtNum(v/1000)+'k'}/>
           <Tooltip content={<ChartTip/>}/>
-          <Line type="monotone" dataKey="valore" name="Valore immobile" stroke="#1f9d55" strokeWidth={2} dot={false}/>
-          <Line type="monotone" dataKey="debito" name="Debito residuo" stroke="#c0392b" strokeWidth={2} dot={false}/>
-          <Line type="monotone" dataKey="equity" name="Equity" stroke="#c5a028" strokeWidth={2} dot={false}/>
+          <Line type="monotone" dataKey="valore" name="Valore della casa" stroke="#1f9d55" strokeWidth={2} dot={false}/>
+          <Line type="monotone" dataKey="debito" name="Debito del mutuo" stroke="#c0392b" strokeWidth={2} dot={false}/>
+          <Line type="monotone" dataKey="equity" name="Quanto \u00e8 tuo" stroke="#c5a028" strokeWidth={2} dot={false}/>
           <Legend wrapperStyle={{fontSize:11}}/>
         </LineChart>
       </ResponsiveContainer>
@@ -1058,22 +1058,22 @@ function PageProiezioni({st, setProi, base, ctx, whatif, setWhatif}){
 
     {/* WHAT IF */}
     <Card className="mb-6">
-      <SectionTitle sub="Sposta gli slider: il cash flow si aggiorna live">Simulazione "What if"</SectionTitle>
+      <SectionTitle sub="Sposta i cursori: i soldi in tasca si aggiornano subito">E se cambiasse qualcosa?</SectionTitle>
       <div className="grid md:grid-cols-3 gap-x-8 mb-4">
         <Slider label="Occupazione" value={whatif.occ} min={40} max={95} step={1} fmt={v=>v+'%'} onChange={v=>setWhatif({...whatif,occ:v})}/>
         <Slider label="Tasso mutuo" value={whatif.tasso} min={1} max={7} step={0.1} fmt={v=>fmtNum(v,1)+'%'} onChange={v=>setWhatif({...whatif,tasso:v})}/>
-        <Slider label="ADR (variazione)" value={whatif.adr} min={60} max={140} step={1} fmt={v=>v+'%'} onChange={v=>setWhatif({...whatif,adr:v})}/>
+        <Slider label="Prezzo a notte (variazione)" value={whatif.adr} min={60} max={140} step={1} fmt={v=>v+'%'} onChange={v=>setWhatif({...whatif,adr:v})}/>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KPI label="Cash flow base" value={fmtEur(wifBase.cashFlowMese)+'/m'} tone={wifBase.cashFlow>=0?'pos':'neg'}/>
-        <KPI label="Cash flow simulato" value={fmtEur(wif.cashFlowMese)+'/m'} tone={wif.cashFlow>=0?'pos':'neg'}/>
-        <KPI label="Delta" value={fmtEur(wif.cashFlowMese-wifBase.cashFlowMese)+'/m'} tone={(wif.cashFlow-wifBase.cashFlow)>=0?'pos':'neg'}/>
+        <KPI label="In tasca oggi" value={fmtEur(wifBase.cashFlowMese)+'/mese'} tone={wifBase.cashFlow>=0?'pos':'neg'}/>
+        <KPI label="In tasca così" value={fmtEur(wif.cashFlowMese)+'/mese'} tone={wif.cashFlow>=0?'pos':'neg'}/>
+        <KPI label="Differenza" value={fmtEur(wif.cashFlowMese-wifBase.cashFlowMese)+'/mese'} tone={(wif.cashFlow-wifBase.cashFlow)>=0?'pos':'neg'}/>
         <KPI label="Ricavo lordo sim." value={fmtEur(wif.ricavoLordo)}/>
       </div>
       <div className="grid md:grid-cols-3 gap-3 mt-3 text-sm">
         <WhatBox q="Occupazione al 60%?" calc={()=>{const w=computeScenario(sc,ctx,{occMul:60/80}); return w;}}/>
         <WhatBox q="Tasso mutuo al 6%?" calc={()=>computeScenario(sc,ctx,{tasso:0.06})}/>
-        <WhatBox q="ADR −20%?" calc={()=>computeScenario(sc,ctx,{adrMul:0.8})}/>
+        <WhatBox q="Prezzo a notte −20%?" calc={()=>computeScenario(sc,ctx,{adrMul:0.8})}/>
       </div>
     </Card>
 
@@ -1083,7 +1083,7 @@ function PageProiezioni({st, setProi, base, ctx, whatif, setWhatif}){
       <div className="overflow-x-auto max-h-96 overflow-y-auto">
         <table className="w-full text-xs">
           <thead className="sticky top-0 bg-white"><tr className="text-gray-500 border-b text-right">
-            <th className="py-2 text-left">Anno</th><th>Ricavo</th><th>Costi tot.</th><th>Netto</th><th>Rata</th><th>Cash flow</th><th>Debito res.</th><th>Valore</th><th>Equity</th>
+            <th className="py-2 text-left">Anno</th><th>Ricavo</th><th>Costi tot.</th><th>Netto</th><th>Rata</th><th>In tasca</th><th>Debito mutuo</th><th>Valore casa</th><th>Quanto \u00e8 tuo</th>
           </tr></thead>
           <tbody>
             {proj.map(row=>(
